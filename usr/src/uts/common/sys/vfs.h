@@ -198,6 +198,7 @@ extern kmutex_t		vskstat_tree_lock;
  */
 struct zone;		/* from zone.h */
 struct fem_head;	/* from fem.h */
+struct fsh_fsrecord;	/* from fsh_impl.h */
 
 typedef struct vfs {
 	struct vfs	*vfs_next;		/* next VFS in VFS list */
@@ -235,6 +236,9 @@ typedef struct vfs {
 
 	struct fem_head	*vfs_femhead;		/* fs monitoring */
 	minor_t		vfs_lofi_minor;		/* minor if lofi mount */
+
+	struct fsh_fsrecord *volatile
+		vfs_fshrecord;			/* fs hooking */
 } vfs_t;
 
 #define	vfs_featureset	vfs_implp->vi_featureset

@@ -241,6 +241,9 @@ CHKHDRS=			\
 	flock.h			\
 	flock_impl.h		\
 	fork.h			\
+	fsd.h			\
+	fsh.h			\
+	fsh_impl.h		\
 	fss.h			\
 	fsspriocntl.h		\
 	fsid.h			\

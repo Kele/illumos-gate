@@ -178,6 +178,7 @@ GENUNIX_OBJS +=	\
 		flock.o		\
 		fm.o		\
 		fork.o		\
+		fsh.o		\
 		vpm.o		\
 		fs_reparse.o	\
 		fs_subr.o	\
@@ -932,6 +933,8 @@ PMCS_OBJS += pmcs_attach.o pmcs_ds.o pmcs_intr.o pmcs_nvram.o pmcs_sata.o \
 
 PMCS8001FW_C_OBJS +=	pmcs_fw_hdr.o
 PMCS8001FW_OBJS +=		$(PMCS8001FW_C_OBJS) SPCBoot.o ila.o firmware.o
+
+FSD_OBJS +=	fsd.o
 
 #
 #	Build up defines and paths.

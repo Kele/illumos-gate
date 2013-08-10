@@ -65,6 +65,7 @@
 #include <fs/fs_subr.h>
 #include <sys/taskq.h>
 #include <fs/fs_reparse.h>
+#include <sys/fsh_impl.h>
 
 /* Determine if this vnode is a file that is read-only */
 #define	ISROFILE(vp)	\
@@ -3225,7 +3226,7 @@ fop_read(
 
 	VOPXID_MAP_CR(vp, cr);
 
-	err = (*(vp)->v_op->vop_read)(vp, uiop, ioflag, cr, ct);
+	err = fsh_read(vp, uiop, ioflag, cr, ct);
 	VOPSTATS_UPDATE_IO(vp, read,
 	    read_bytes, (resid_start - uiop->uio_resid));
 	return (err);
@@ -3244,7 +3245,7 @@ fop_write(
 
 	VOPXID_MAP_CR(vp, cr);
 
-	err = (*(vp)->v_op->vop_write)(vp, uiop, ioflag, cr, ct);
+	err = fsh_write(vp, uiop, ioflag, cr, ct);
 	VOPSTATS_UPDATE_IO(vp, write,
 	    write_bytes, (resid_start - uiop->uio_resid));
 	return (err);
