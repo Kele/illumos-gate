@@ -171,6 +171,7 @@ typedef struct fsd_int {
 	fsd_t		fsdi_param;
 	fsh_handle_t	fsdi_handle;	/* we use fsh's handle in fsd */
 	vfs_t		*fsdi_vfsp;
+	int		fsdi_doomed;
 	list_node_t	fsdi_next;
 } fsd_int_t;
 
@@ -366,8 +367,10 @@ fsd_remove_disturber(vfs_t *vfsp)
 		if (fsdi->fsdi_vfsp == vfsp)
 			break;
 	}
-	if (fsdi == NULL)
+	if (fsdi == NULL || fsdi->fsdi_doomed)
 		return (ENOENT);
+
+	fsdi->fsdi_doomed = 1;
 
 	mutex_enter(&fsd_rem_thread_lock);
 	fsd_rem_thread = curthread;
@@ -425,6 +428,10 @@ fsd_callback_free(vfs_t *vfsp, void *arg)
 	for (fsdi = list_head(&fsd_list); fsdi != NULL;
 	    fsdi = list_next(&fsd_list, fsdi)) {
 		if (fsdi->fsdi_vfsp == vfsp) {
+			if (fsdi->fsdi_doomed)
+				continue;
+
+			fsdi->fsdi_doomed = 1;
 			/*
 			 * We make such assertion, because fsd_lock is held
 			 * and that means that neither fsd_remove_disturber()
@@ -553,7 +560,8 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	mutex_enter(&fsd_lock);
 	for (fsdi = list_head(&fsd_list); fsdi != NULL;
 	    fsdi = list_next(&fsd_list, fsdi)) {
-		ASSERT(fsd_remove_disturber(fsdi->fsdi_vfsp) == 0);
+		if (fsdi->fsdi_doomed == 0)
+			ASSERT(fsd_remove_disturber(fsdi->fsdi_vfsp) == 0);
 	}
 
 	while (fsd_list_count > 0)
