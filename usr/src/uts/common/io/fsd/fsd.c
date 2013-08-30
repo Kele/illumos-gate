@@ -33,6 +33,12 @@
 #include <sys/types.h>
 
 /*
+ * TODO:
+ * - add checking if a file descriptor passed by the client is indeed
+ *	a mountpoint (we'd like to avoid disturbing / instead of an
+ *	unmounted filesystem)
+ */
+/*
  * fsd - filesystem disturber
  *
  * 1. Abstract
