@@ -40,19 +40,27 @@ typedef struct fsht_int {
 	list_node_t	fshti_next;
 } fsht_int_t;
 
-typedef struct fshtcb_int {
+typedef struct fsht_cb_int {
 	fsh_callback_handle_t fshtcbi_handle;
 	int64_t		fshtcbi_arg;
 	list_node_t	fshtcbi_next;
-} fshtcb_int_t;
+} fsht_cb_int_t;
 
 static dev_info_t *fsht_devi;
 
+/*
+ * fsht_lock protects: fsht_detaching, fsht_hooks, fsht_cbs, fsht_hooks_count,
+ * fsht_hooks_empty.
+ */
 static kmutex_t fsht_lock;
-static list_t fsht_hooks;	/* list of fsht_int_t */
-static list_t fsht_cbs;		/* list of fshtcb_int_t */
 
+static list_t fsht_hooks;	/* list of fsht_int_t */
+static list_t fsht_cbs;		/* list of fsht_cb_int_t */
+
+static int fsht_hooks_count;
 static kcondvar_t fsht_hooks_empty;
+
+static int fsht_detaching;
 
 static kmutex_t fsht_owner_lock;
 static kthread_t *fsht_owner;
@@ -60,7 +68,7 @@ static kthread_t *fsht_owner;
 
 /* Dummy hooks */
 static int
-fsht_read(fsh_int_t *fshi, void *arg, vnode_t *vp, uio_t *uiop, int ioflag,
+fsht_hook_read(fsh_int_t *fshi, void *arg, vnode_t *vp, uio_t *uiop, int ioflag,
     cred_t *cr, caller_context_t *ct)
 {
 	_NOTE(ARGUNUSED(arg));
@@ -68,15 +76,15 @@ fsht_read(fsh_int_t *fshi, void *arg, vnode_t *vp, uio_t *uiop, int ioflag,
 }
 
 static int
-fsht_write(fsh_int_t *fshi, void *arg, vnode_t *vp, uio_t *uiop, int ioflag,
-    cred_t *cr, caller_context_t *ct)
+fsht_hook_write(fsh_int_t *fshi, void *arg, vnode_t *vp, uio_t *uiop,
+    int ioflag, cred_t *cr, caller_context_t *ct)
 {
 	_NOTE(ARGUNUSED(arg));
 	return (fsh_next_write(fshi, vp, uiop, ioflag, cr, ct));
 }
 
 static int
-fsht_mount(fsh_int_t *fshi, void *arg, vfs_t *vfsp, vnode_t *mvp,
+fsht_hook_mount(fsh_int_t *fshi, void *arg, vfs_t *vfsp, vnode_t *mvp,
     struct mounta *uap, cred_t *cr)
 {
 	_NOTE(ARGUNUSED(arg));
@@ -84,7 +92,7 @@ fsht_mount(fsh_int_t *fshi, void *arg, vfs_t *vfsp, vnode_t *mvp,
 }
 
 static int
-fsht_unmount(fsh_int_t *fshi, void *arg, vfs_t *vfsp, int flag, cred_t *cr)
+fsht_hook_unmount(fsh_int_t *fshi, void *arg, vfs_t *vfsp, int flag, cred_t *cr)
 {
 	_NOTE(ARGUNUSED(arg));
 	return (fsh_next_unmount(fshi, vfsp, flag, cr));
@@ -92,7 +100,7 @@ fsht_unmount(fsh_int_t *fshi, void *arg, vfs_t *vfsp, int flag, cred_t *cr)
 
 /* Hook remove callback */
 static void
-fsht_cb_remove(void *arg, fsh_handle_t handle)
+fsht_hook_rem_cb(void *arg, fsh_handle_t handle)
 {
 	_NOTE(ARGUNUSED(handle));
 
@@ -108,10 +116,12 @@ fsht_cb_remove(void *arg, fsh_handle_t handle)
 
 	ASSERT(MUTEX_HELD(&fsht_lock));
 
-	list_remove(&fsht_hooks, fshti);
+	if (!fsht_detaching)
+		list_remove(&fsht_hooks, fshti);
 	kmem_free(fshti, sizeof (*fshti));
 
-	if (list_head(&fsht_hooks) == NULL)
+	fsht_hooks_count--;
+	if (fsht_hooks_count == 0)
 		cv_signal(&fsht_hooks_empty);
 
 	if (!fsht_context)
@@ -142,11 +152,11 @@ fsht_hook_install(vfs_t *vfsp, int64_t arg)
 	fshti->fshti_arg = arg;
 
 	hook.arg = fshti;
-	hook.read = fsht_read;
-	hook.write = fsht_write;
-	hook.mount = fsht_mount;
-	hook.unmount = fsht_unmount;
-	hook.remove_cb = fsht_cb_remove;
+	hook.read = fsht_hook_read;
+	hook.write = fsht_hook_write;
+	hook.mount = fsht_hook_mount;
+	hook.unmount = fsht_hook_unmount;
+	hook.remove_cb = fsht_hook_rem_cb;
 
 	fshti->fshti_handle = fsh_hook_install(vfsp, &hook);
 	if (fshti->fshti_handle == -1) {
@@ -155,6 +165,7 @@ fsht_hook_install(vfs_t *vfsp, int64_t arg)
 		return (EAGAIN);
 	}
 	list_insert_head(&fsht_hooks, fshti);
+	fsht_hooks_count++;
 
 	mutex_exit(&fsht_lock);
 
@@ -213,7 +224,7 @@ static int
 fsht_install_cb(int64_t arg)
 {
 	fsh_callback_t callback = { 0 };
-	fshtcb_int_t *fshtcbi;
+	fsht_cb_int_t *fshtcbi;
 
 	mutex_enter(&fsht_lock);
 	for (fshtcbi = list_head(&fsht_cbs); fshtcbi != NULL;
@@ -249,7 +260,7 @@ fsht_install_cb(int64_t arg)
 static int
 fsht_remove_cb(int64_t arg)
 {
-	fshtcb_int_t *fshtcbi;
+	fsht_cb_int_t *fshtcbi;
 
 	mutex_enter(&fsht_lock);
 	for (fshtcbi = list_head(&fsht_cbs); fshtcbi != NULL;
@@ -296,8 +307,8 @@ fsht_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 
 	list_create(&fsht_hooks, sizeof (fsht_int_t),
 	    offsetof(fsht_int_t, fshti_next));
-	list_create(&fsht_cbs, sizeof (fshtcb_int_t),
-	    offsetof(fshtcb_int_t, fshtcbi_next));
+	list_create(&fsht_cbs, sizeof (fsht_cb_int_t),
+	    offsetof(fsht_cb_int_t, fshtcbi_next));
 
 	cv_init(&fsht_hooks_empty, NULL, CV_DRIVER, NULL);
 
@@ -308,7 +319,7 @@ static int
 fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 {
 	fsht_int_t *fshti;
-	fshtcb_int_t *cb;
+	fsht_cb_int_t *cb;
 
 	if (cmd != DDI_DETACH)
 		return (DDI_FAILURE);
@@ -318,9 +329,27 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	ddi_remove_minor_node(dip, NULL);
 	fsht_devi = NULL;
 
+
+	/*
+	 * After fsht_lock is acquired in fsht_detach(), there is no way to
+	 * manipulate the fsht_hooks list from other context than fsht_detach().
+	 * Because of that, we are able to walk through fsh_hooks and remove the
+	 * hooks without invalidaint our iterator.  Here is a situation where
+	 * without it, things would go wrong:
+	 * for (fshti = list_head(&fsht_hooks); fshti != NULL;
+	 *    fshti = list_next(&fsht_hooks, fshti)) {
+	 *	if (fshti->fshti_doomed)
+	 *	    continue;
+	 *	fsh_hook_remove(fshti->fshti_handle);
+	 * }
+	 * It is possible, that inside fsh_hook_remove(), fsht_hook_rem_cb()
+	 * would be fired. If that happens, after fsh_hook_remove() returns,
+	 * fshti would be invalid and thus the iterating step in our loop would
+	 * fail.
+	 */
 	mutex_enter(&fsht_lock);
-	for (fshti = list_head(&fsht_hooks); fshti != NULL;
-	    fshti = list_next(&fsht_hooks, fshti)) {
+	fsht_detaching = 1;
+	while ((fshti = list_remove_head(&fsht_hooks)) != NULL) {
 		if (fshti->fshti_doomed)
 			continue;
 
@@ -337,9 +366,13 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		mutex_exit(&fsht_owner_lock);
 	}
 
-	while (list_head(&fsht_hooks) != NULL)
+	/*
+	 * fsh does not guarantee that after fsh_hook_remove(), threads won't be
+	 * executing our hooks. We have to wait for fsht_hook_rem_cb().
+	 */
+	while (fsht_hooks_count > 0)
 		cv_wait(&fsht_hooks_empty, &fsht_lock);
-	
+
 	while ((cb = list_remove_head(&fsht_cbs)) != NULL)
 		ASSERT(fsh_callback_remove(cb->fshtcbi_handle) == 0);
 

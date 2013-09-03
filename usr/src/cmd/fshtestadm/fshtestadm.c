@@ -93,7 +93,7 @@ main(int argc, char *argv[])
 
 			io.fshthio_fd = fd;
 			io.fshthio_arg = arg;
-			
+
 			drv_fd = open(FSHT_DEV_PATH, O_RDWR);
 			if (drv_fd == -1) {
 				perror("Error");
@@ -115,7 +115,7 @@ main(int argc, char *argv[])
 
 			io.fshthio_fd = fd;
 			io.fshthio_arg = arg;
-			
+
 			drv_fd = open(FSHT_DEV_PATH, O_RDWR);
 			if (drv_fd == -1) {
 				perror("Error");
@@ -150,6 +150,6 @@ main(int argc, char *argv[])
 
 usage:
 	return (-1);
-	/* TODO: print usage */	
+	/* TODO: print usage */
 
 }
