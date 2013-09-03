@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2013 Damian Bogel.  All rights reserved.
+ * Copyright 2013 Damian Bogel. All rights reserved.
  */
 
 /*
@@ -136,15 +136,18 @@
  * 4. Internals
  * When fsd_enabled is nonzero, fsd_detach() fails.
  *
- * fsd_attach() does the necessary mount, free callbacks installing.
- * fsd_detach() does the removing.
- * These callbacks are used for both installing injections on newly mounted
- * vfs_t's (omnipresent) and cleaning up when a vfs_t is destroyed.
- * (fsd_callback_{mount, free})
+ * These mount callback is used for installing injections on newly mounted
+ * vfs_t's (omnipresent).
  *
  * The list of currently installed hooks is kept in fsd_list.
  *
  * fsd installs at most one hook on a vfs_t.
+ *
+ * Inside fsd_detach, we go through fsd_hooks list. There is no guarantee that
+ * a hook remove callback (fsd_remove_cb) wouldn't execute inside
+ * fsh_hook_remove(), thus we can't assume that while walking through fsd_hooks,
+ * our iterator will be valid, because fsh_hook_remove() could invalidate it.
+ * That's why fsd_detaching flag is introduced.
  *
  * 5. Locking
  * Every modification of fsd_enable, fsd_hooks, fsd_omni_param and fsd_list is
@@ -158,10 +161,9 @@
  * Because of the fact that fsd_remove_cb() could be called both in the context
  * of the thread that executes fsh_hook_remove() or outside the fsd, we need to
  * use fsd_rem_thread in order not to cause a deadlock. fsh_hook_remove() could
- * be called by at most one thread inside fsd (both fsd_remove_disturber() and
- * fsd_callback_free() hold fsd_lock while doing that). We just have to check
- * inside fsd_remove_cb() if it was called from fsh_hook_remove() or not. We use
- * fsd_rem_thread to determine that.
+ * be called by at most one thread inside fsd (fsd_remove_disturber() holds
+ * fsd_lock). We just have to check inside fsd_remove_cb() if it was called
+ * from fsh_hook_remove() or not. We use fsd_rem_thread to determine that.
  *
  * fsd_int_t.fsdi_param is protected by fsd_int_t.fsdi_lock which is an rwlock.
  */
@@ -184,7 +186,10 @@ typedef struct fsd_int {
 static dev_info_t *fsd_devi;
 
 
-/* procets: fsd_enabled, fsd_omni_param, fsd_list, fsd_cb_handle */
+/*
+ * fsd_lock protects: fsd_enabled, fsd_omni_param, fsd_list, fsd_cb_handle,
+ * fsd_detaching
+ */
 static kmutex_t fsd_lock;
 
 static kthread_t *fsd_rem_thread;
@@ -193,6 +198,7 @@ static kmutex_t fsd_rem_thread_lock;
 static fsd_t *fsd_omni_param;	/* Argument used by fsd's mount callback. */
 static fsh_callback_handle_t fsd_cb_handle;
 static int fsd_enabled;
+static int fsd_detaching;
 
 /*
  * List of fsd_int_t. For every vfs_t on which fsd has installed a set of hooks
@@ -294,13 +300,17 @@ fsd_remove_cb(void *arg, fsh_handle_t handle)
 	if (!fsd_context)
 		mutex_enter(&fsd_lock);
 
-	list_remove(&fsd_list, fsdi);
-	fsd_list_count--;
-	if (fsd_list_count == 0)
-		cv_signal(&fsd_cv_empty);
+	ASSERT(MUTEX_HELD(&fsd_lock));
+
+	if (!fsd_detaching)
+		list_remove(&fsd_list, fsdi);
 
 	rw_destroy(&fsdi->fsdi_lock);
 	kmem_free(fsdi, sizeof (*fsdi));
+
+	fsd_list_count--;
+	if (fsd_list_count == 0)
+		cv_signal(&fsd_cv_empty);
 
 	if (!fsd_context)
 		mutex_exit(&fsd_lock);
@@ -414,63 +424,6 @@ fsd_callback_mount(vfs_t *vfsp, void *arg)
 }
 
 static void
-fsd_callback_free(vfs_t *vfsp, void *arg)
-{
-	_NOTE(ARGUNUSED(arg));
-
-	fsd_int_t *fsdi;
-
-	/*
-	 * Why we don't just pass fsd_int_t associated with this hook as an
-	 * argument?
-	 * Let's say that this callback has been just fired, but hasn't yet
-	 * locked the fsd_lock. Meanwhile, in other thread,
-	 * fsd_remove_disturber() is executing and the hook associated with
-	 * fsd_int_t has been removed and the fsd_int_t has been destroyed. Now
-	 * we go back to our free callback thread, and we try to remove an entry
-	 * which does not exist.
-	 */
-	mutex_enter(&fsd_lock);
-	for (fsdi = list_head(&fsd_list); fsdi != NULL;
-	    fsdi = list_next(&fsd_list, fsdi)) {
-		if (fsdi->fsdi_vfsp == vfsp) {
-			if (fsdi->fsdi_doomed)
-				continue;
-
-			fsdi->fsdi_doomed = 1;
-			/*
-			 * We make such assertion, because fsd_lock is held
-			 * and that means that neither fsd_remove_disturber()
-			 * nor fsd_remove_cb() has removed this hook in
-			 * different thread.
-			 */
-			mutex_enter(&fsd_rem_thread_lock);
-			fsd_rem_thread = curthread;
-			mutex_exit(&fsd_rem_thread_lock);
-
-			ASSERT(fsh_hook_remove(fsdi->fsdi_handle) == 0);
-
-			mutex_enter(&fsd_rem_thread_lock);
-			fsd_rem_thread = NULL;
-			mutex_exit(&fsd_rem_thread_lock);
-
-			/*
-			 * Since there is at most one hook installed by fsd,
-			 * we break.
-			 */
-			break;
-		}
-	}
-	/*
-	 * We can't write ASSERT(fsdi != NULL) because it is possible that
-	 * there was a concurrent call to fsd_remove_disturber() or
-	 * fsd_detach().
-	 */
-	mutex_exit(&fsd_lock);
-}
-
-
-static void
 fsd_enable()
 {
 	mutex_enter(&fsd_lock);
@@ -517,7 +470,6 @@ fsd_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	cv_init(&fsd_cv_empty, NULL, CV_DRIVER, NULL);
 
 	cb.fshc_mount = fsd_callback_mount;
-	cb.fshc_free = fsd_callback_free;
 	cb.fshc_arg = fsd_omni_param;
 	fsd_cb_handle = fsh_callback_install(&cb);
 	if (fsd_cb_handle == -1) {
@@ -558,17 +510,26 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	ddi_remove_minor_node(dip, NULL);
 	fsd_devi = NULL;
 
-	/*
-	 * Hooks have to be removed before the callbacks. That's because without
-	 * free() callbacks, we wouldn't be able to determine if a hook handle
-	 * is valid.
-	 */
 	mutex_enter(&fsd_lock);
-	for (fsdi = list_head(&fsd_list); fsdi != NULL;
-	    fsdi = list_next(&fsd_list, fsdi)) {
-		if (fsdi->fsdi_doomed == 0)
-			ASSERT(fsd_remove_disturber(fsdi->fsdi_vfsp) == 0);
-	}
+	fsd_detaching = 1;
+	while ((fsdi = list_remove_head(&fsd_list)) != NULL)
+		if (fsdi->fsdi_doomed == 0) {
+			fsdi->fsdi_doomed = 1;
+
+			mutex_enter(&fsd_rem_thread_lock);
+			fsd_rem_thread = curthread;
+			mutex_exit(&fsd_rem_thread_lock);
+
+			/*
+			 * fsd_lock is held, so no other thread could have
+			 * removed this hook.
+			 */
+			ASSERT(fsh_hook_remove(fsdi->fsdi_handle) == 0);
+
+			mutex_enter(&fsd_rem_thread_lock);
+			fsd_rem_thread = NULL;
+			mutex_exit(&fsd_rem_thread_lock);
+		}
 
 	while (fsd_list_count > 0)
 		cv_wait(&fsd_cv_empty, &fsd_lock);
@@ -581,7 +542,7 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		fsd_omni_param = NULL;
 	}
 
-	/* After removing the callbacks and hooks, it is safe to remove these */
+	/* After removing the callback and hooks, it is safe to remove these */
 	list_destroy(&fsd_list);
 	mutex_destroy(&fsd_rem_thread_lock);
 	mutex_destroy(&fsd_lock);
