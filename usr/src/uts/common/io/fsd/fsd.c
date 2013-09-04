@@ -823,7 +823,13 @@ fsd_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
 	_NOTE(ARGUNUSED(dev));
 	_NOTE(ARGUNUSED(credp));
 
-	if (!fsd_enabled && cmd != FSD_ENABLE) {
+	int enabled;
+
+	mutex_enter(&fsd_lock);
+	enabled = fsd_enabled;
+	mutex_exit(&fsd_lock);
+
+	if (!enabled && cmd != FSD_ENABLE) {
 		*rvalp = ENOTACTIVE;
 		return (0);
 	}
