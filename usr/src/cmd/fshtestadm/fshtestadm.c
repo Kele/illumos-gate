@@ -29,6 +29,8 @@ int iflag;
 int rflag;
 int hflag;
 int cflag;
+int eflag;
+int dflag;
 
 int drv_fd;
 
@@ -45,8 +47,16 @@ main(int argc, char *argv[])
 	if (argc < 2)
 		goto usage;
 
-	while ((opt = getopt(argc, argv, "m:a:irhc")) != -1) {
+	while ((opt = getopt(argc, argv, "edm:a:irhc")) != -1) {
 		switch (opt) {
+		case 'e':
+			eflag = 1;
+			break;
+
+		case 'd':
+			dflag = 1;
+			break;
+
 		case 'm':
 			mflag = 1;
 			mnt = optarg;
@@ -73,6 +83,28 @@ main(int argc, char *argv[])
 			cflag = 1;
 			break;
 		}
+	}
+
+	if (eflag) {
+		drv_fd = open(FSHT_DEV_PATH, O_RDWR);
+		if (drv_fd == -1) {
+			perror("Error");
+			return (-1);
+		}
+		(void) ioctl(drv_fd, FSHT_ENABLE);
+		(void) close(drv_fd);
+		return (0);
+	}
+
+	if (eflag) {
+		drv_fd = open(FSHT_DEV_PATH, O_RDWR);
+		if (drv_fd == -1) {
+			perror("Error");
+			return (-1);
+		}
+		(void) ioctl(drv_fd, FSHT_DISABLE);
+		(void) close(drv_fd);
+		return (0);
 	}
 
 	if (hflag) {

@@ -39,6 +39,8 @@ extern "C" {
 #define	FSHT_HOOKS_REMOVE	(FSHT_IOC | 2)
 #define	FSHT_CB_INSTALL		(FSHT_IOC | 3)
 #define	FSHT_CB_REMOVE		(FSHT_IOC | 4)
+#define	FSHT_ENABLE		(FSHT_IOC | 5)
+#define	FSHT_DISABLE		(FSHT_IOC | 6)
 
 typedef struct fsht_hook_ioc {
 	int64_t	fshthio_fd;

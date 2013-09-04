@@ -60,6 +60,8 @@ static list_t fsht_cbs;		/* list of fsht_cb_int_t */
 static int fsht_hooks_count;
 static kcondvar_t fsht_hooks_empty;
 
+static int fsht_enabled;
+
 static int fsht_detaching;
 
 static kmutex_t fsht_owner_lock;
@@ -321,7 +323,16 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	fsht_int_t *fshti;
 	fsht_cb_int_t *cb;
 
+	int enabled;
+
 	if (cmd != DDI_DETACH)
+		return (DDI_FAILURE);
+
+	mutex_enter(&fsht_lock);
+	enabled = fsht_enabled;
+	mutex_exit(&fsht_lock);
+
+	if (enabled)
 		return (DDI_FAILURE);
 
 	ASSERT(dip == fsht_devi);
@@ -443,7 +454,29 @@ fsht_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
 	_NOTE(ARGUNUSED(dev));
 	_NOTE(ARGUNUSED(credp));
 
+	int enabled;
+
+	mutex_enter(&fsht_lock);
+	enabled = fsht_enabled;
+	mutex_exit(&fsht_lock);
+	if (!enabled && cmd != FSHT_ENABLE) {
+		*rvalp = ENOTACTIVE;
+		return (0);
+	}
+
 	switch (cmd) {
+	case FSHT_ENABLE: {
+		mutex_enter(&fsht_lock);
+		fsht_enabled = 1;
+		mutex_exit(&fsht_lock);
+		return (0);
+	}
+	case FSHT_DISABLE: {
+		mutex_enter(&fsht_lock);
+		fsht_enabled = 0;
+		mutex_exit(&fsht_lock);
+		return (0);
+	}
 	case FSHT_HOOKS_INSTALL: {
 		fsht_hook_ioc_t io;
 		file_t *file;
