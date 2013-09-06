@@ -260,10 +260,9 @@
  *          |                                   |
  *   fsh_read(),                            fshi_rele()
  *   fsh_write(),
- *   ...,                               Might be called from:
- *   fsh_next_read(),                    fsh_hook_remove()
- *   fsh_next_write(),                   fsh_read(), fsh_write(), ...
- *   ...                                 fsh_next_read(), fsh_next_write(), ...
+ *   ...                                Might be called from:
+ *                                        fsh_hook_remove()
+ *                                        fsh_read(), fsh_write(), ...
  *
  * fsh_lock is a global lock for adminsitrative path (fsh_hook_install,
  * fsh_hook_remove) and fsh_fsrec_destroy() (which is semi-administrative, since
@@ -274,7 +273,7 @@
 
 
 /* Internals */
-struct fsh_int {
+typedef struct fsh_int {
 	fsh_handle_t	fshi_handle;
 	fsh_t		fshi_hooks;
 	vfs_t		*fshi_vfsp;
@@ -284,17 +283,24 @@ struct fsh_int {
 	uint64_t	fshi_doomed;	/* changed inside fsh_lock */
 
 	/* next node in fshfsr_list */
-	list_node_t	fshi_next;
+	list_node_t	fshi_node;
 
 	/* next node in fsh_map */
 	list_node_t	fshi_global;
-};
+} fsh_int_t;
 
 typedef struct fsh_callback_int {
 	fsh_callback_t	fshci_cb;
 	fsh_callback_handle_t fshci_handle;
-	list_node_t	fshci_next;
+	list_node_t	fshci_node;
 } fsh_callback_int_t;
+
+
+typedef struct fsh_exec {
+	fsh_int_t	*fshe_fshi;
+	void		*fshe_instance;
+	list_node_t	fshe_node;
+} fsh_exec_t;
 
 
 static kmutex_t fsh_lock;
@@ -719,6 +725,8 @@ fsh_read(vnode_t *vp, uio_t *uiop, int ioflag, cred_t *cr,
 	int ret;
 	fsh_fsrecord_t *fsrecp;
 	fsh_int_t *fshi;
+	fsh_exec_t *fshe;
+	list_t exec_list;
 
 	fsh_prepare_fsrec(vp->v_vfsp);
 	fsrecp = vp->v_vfsp->vfs_fshrecord;
@@ -726,23 +734,49 @@ fsh_read(vnode_t *vp, uio_t *uiop, int ioflag, cred_t *cr,
 	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
 	if (!(fsrecp->fshfsr_enabled)) {
 		rw_exit(&fsrecp->fshfsr_lock);
-		return ((*(vp->v_op->vop_read))(vp, uiop, ioflag, cr, ct));
+		return ((*vp->v_op->vop_read)(vp, uiop, ioflag, cr, ct));
 	}
+
+	list_create(&exec_list, sizeof (fsh_exec_t),
+	    offsetof(fsh_exec_t, fshe_node));
 
 	for (fshi = list_head(&fsrecp->fshfsr_list); fshi != NULL;
 	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
-		if (fshi->fshi_hooks.read != NULL)
-			if (fshi_hold(fshi))
-				break;
+		if (fshi->fshi_hooks.pre_read != NULL ||
+		    fshi->fshi_hooks.post_read != NULL) {
+			if (fshi_hold(fshi)) {
+				fshe = kmem_alloc(sizeof (*fshe), KM_SLEEP);
+				fshe->fshe_fshi = fshi;
+				list_insert_tail(&exec_list, fshe);
+			}
+		}
 	}
 	rw_exit(&fsrecp->fshfsr_lock);
 
-	if (fshi == NULL)
-		return ((*(vp->v_op->vop_read))(vp, uiop, ioflag, cr, ct));
+	/* Execute pre hooks */
+	for (fshe = list_head(&exec_list); fshe != NULL;
+	    fshe = list_next(&exec_list, fshe)) {
+		if (fshe->fshe_fshi->fshi_hooks.pre_read != NULL)
+			(*fshe->fshe_fshi->fshi_hooks.pre_read)(
+			    fshe->fshe_fshi->fshi_hooks.arg,
+			    &fshe->fshe_instance,
+			    &vp, &uiop, &ioflag, &cr, &ct);
+	}
 
-	ret = (*fshi->fshi_hooks.read)(fshi, fshi->fshi_hooks.arg,
-	    vp, uiop, ioflag, cr, ct);
-	fshi_rele(fshi);
+	ret = (*vp->v_op->vop_read)(vp, uiop, ioflag, cr, ct);
+
+	/* Execute post hooks */
+	while ((fshe = list_remove_tail(&exec_list)) != NULL) {
+		if (fshe->fshe_fshi->fshi_hooks.post_read != NULL)
+			ret = (*fshe->fshe_fshi->fshi_hooks.post_read)(
+			    ret, fshe->fshe_fshi->fshi_hooks.arg,
+			    fshe->fshe_instance,
+			    vp, uiop, ioflag, cr, ct);
+		fshi_rele(fshe->fshe_fshi);
+		kmem_free(fshe, sizeof (*fshe));
+	}
+	list_destroy(&exec_list);
+
 	return (ret);
 }
 
@@ -750,42 +784,72 @@ int
 fsh_write(vnode_t *vp, uio_t *uiop, int ioflag, cred_t *cr,
 	caller_context_t *ct)
 {
-	fsh_int_t *fshi;
 	int ret;
 	fsh_fsrecord_t *fsrecp;
+	fsh_int_t *fshi;
+	fsh_exec_t *fshe;
+	list_t exec_list;
 
 	fsh_prepare_fsrec(vp->v_vfsp);
 	fsrecp = vp->v_vfsp->vfs_fshrecord;
 
 	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
-	if (!(vp->v_vfsp->vfs_fshrecord->fshfsr_enabled)) {
+	if (!(fsrecp->fshfsr_enabled)) {
 		rw_exit(&fsrecp->fshfsr_lock);
-		return ((*(vp->v_op->vop_write))(vp, uiop, ioflag, cr, ct));
+		return ((*vp->v_op->vop_write)(vp, uiop, ioflag, cr, ct));
 	}
+
+	list_create(&exec_list, sizeof (fsh_exec_t),
+	    offsetof(fsh_exec_t, fshe_node));
 
 	for (fshi = list_head(&fsrecp->fshfsr_list); fshi != NULL;
 	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
-		if (fshi->fshi_hooks.write != NULL)
-			if (fshi_hold(fshi))
-				break;
+		if (fshi->fshi_hooks.pre_write != NULL ||
+		    fshi->fshi_hooks.post_write != NULL) {
+			if (fshi_hold(fshi)) {
+				fshe = kmem_alloc(sizeof (*fshe), KM_SLEEP);
+				fshe->fshe_fshi = fshi;
+				list_insert_tail(&exec_list, fshe);
+			}
+		}
 	}
 	rw_exit(&fsrecp->fshfsr_lock);
 
-	if (fshi == NULL)
-		return ((*(vp->v_op->vop_write))(vp, uiop, ioflag, cr, ct));
+	/* Execute pre hooks */
+	for (fshe = list_head(&exec_list); fshe != NULL;
+	    fshe = list_next(&exec_list, fshe)) {
+		if (fshe->fshe_fshi->fshi_hooks.pre_write != NULL)
+			(*fshe->fshe_fshi->fshi_hooks.pre_write)(
+			    fshe->fshe_fshi->fshi_hooks.arg,
+			    &fshe->fshe_instance,
+			    &vp, &uiop, &ioflag, &cr, &ct);
+	}
 
-	ret = (*fshi->fshi_hooks.write)(fshi, fshi->fshi_hooks.arg,
-	    vp, uiop, ioflag, cr, ct);
-	fshi_rele(fshi);
+	ret = (*vp->v_op->vop_write)(vp, uiop, ioflag, cr, ct);
+
+	/* Execute post hooks */
+	while ((fshe = list_remove_tail(&exec_list)) != NULL) {
+		if (fshe->fshe_fshi->fshi_hooks.post_write != NULL)
+			ret = (*fshe->fshe_fshi->fshi_hooks.post_write)(
+			    ret, fshe->fshe_fshi->fshi_hooks.arg,
+			    fshe->fshe_instance,
+			    vp, uiop, ioflag, cr, ct);
+		fshi_rele(fshe->fshe_fshi);
+		kmem_free(fshe, sizeof (*fshe));
+	}
+	list_destroy(&exec_list);
+
 	return (ret);
 }
 
 int
 fsh_mount(vfs_t *vfsp, vnode_t *mvp, struct mounta *uap, cred_t *cr)
 {
+	int ret;
 	fsh_fsrecord_t *fsrecp;
 	fsh_int_t *fshi;
-	int ret;
+	fsh_exec_t *fshe;
+	list_t exec_list;
 
 	fsh_prepare_fsrec(vfsp);
 	fsrecp = vfsp->vfs_fshrecord;
@@ -793,32 +857,60 @@ fsh_mount(vfs_t *vfsp, vnode_t *mvp, struct mounta *uap, cred_t *cr)
 	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
 	if (!(fsrecp->fshfsr_enabled)) {
 		rw_exit(&fsrecp->fshfsr_lock);
-		return ((*(vfsp->vfs_op->vfs_mount))(vfsp, mvp, uap, cr));
+		return ((*vfsp->vfs_op->vfs_mount)(vfsp, mvp, uap, cr));
 	}
+
+	list_create(&exec_list, sizeof (fsh_exec_t),
+	    offsetof(fsh_exec_t, fshe_node));
 
 	for (fshi = list_head(&fsrecp->fshfsr_list); fshi != NULL;
 	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
-		if (fshi->fshi_hooks.mount != NULL)
-			if (fshi_hold(fshi))
-				break;
+		if (fshi->fshi_hooks.pre_mount != NULL ||
+		    fshi->fshi_hooks.post_mount != NULL) {
+			if (fshi_hold(fshi)) {
+				fshe = kmem_alloc(sizeof (*fshe), KM_SLEEP);
+				fshe->fshe_fshi = fshi;
+				list_insert_tail(&exec_list, fshe);
+			}
+		}
 	}
 	rw_exit(&fsrecp->fshfsr_lock);
 
-	if (fshi == NULL)
-		return ((*(vfsp->vfs_op->vfs_mount))(vfsp, mvp, uap, cr));
+	/* Execute pre hooks */
+	for (fshe = list_head(&exec_list); fshe != NULL;
+	    fshe = list_next(&exec_list, fshe)) {
+		if (fshe->fshe_fshi->fshi_hooks.pre_mount != NULL)
+			(*fshe->fshe_fshi->fshi_hooks.pre_mount)(
+			    &fshe->fshe_fshi->fshi_hooks.arg,
+			    &fshe->fshe_instance,
+			    &vfsp, &mvp, &uap, &cr);
+	}
 
-	ret = (*fshi->fshi_hooks.mount)(fshi, fshi->fshi_hooks.arg,
-	    vfsp, mvp, uap, cr);
-	fshi_rele(fshi);
+	ret = (*vfsp->vfs_op->vfs_mount)(vfsp, mvp, uap, cr);
+
+	/* Execute post hooks */
+	while ((fshe = list_remove_tail(&exec_list)) != NULL) {
+		if (fshe->fshe_fshi->fshi_hooks.post_mount != NULL)
+			ret = (*fshe->fshe_fshi->fshi_hooks.post_mount)(
+			    ret, fshe->fshe_fshi->fshi_hooks.arg,
+			    fshe->fshe_instance,
+			    vfsp, mvp, uap, cr);
+		fshi_rele(fshe->fshe_fshi);
+		kmem_free(fshe, sizeof (*fshe));
+	}
+	list_destroy(&exec_list);
+
 	return (ret);
 }
 
 int
 fsh_unmount(vfs_t *vfsp, int flag, cred_t *cr)
 {
+	int ret;
 	fsh_fsrecord_t *fsrecp;
 	fsh_int_t *fshi;
-	int ret;
+	fsh_exec_t *fshe;
+	list_t exec_list;
 
 	fsh_prepare_fsrec(vfsp);
 	fsrecp = vfsp->vfs_fshrecord;
@@ -826,23 +918,49 @@ fsh_unmount(vfs_t *vfsp, int flag, cred_t *cr)
 	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
 	if (!(fsrecp->fshfsr_enabled)) {
 		rw_exit(&fsrecp->fshfsr_lock);
-		return ((*(vfsp->vfs_op->vfs_unmount))(vfsp, flag, cr));
+		return ((*vfsp->vfs_op->vfs_unmount)(vfsp, flag, cr));
 	}
+
+	list_create(&exec_list, sizeof (fsh_exec_t),
+	    offsetof(fsh_exec_t, fshe_node));
 
 	for (fshi = list_head(&fsrecp->fshfsr_list); fshi != NULL;
 	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
-		if (fshi->fshi_hooks.unmount != NULL)
-			if (fshi_hold(fshi))
-				break;
+		if (fshi->fshi_hooks.pre_unmount != NULL ||
+		    fshi->fshi_hooks.post_unmount != NULL) {
+			if (fshi_hold(fshi)) {
+				fshe = kmem_alloc(sizeof (*fshe), KM_SLEEP);
+				fshe->fshe_fshi = fshi;
+				list_insert_tail(&exec_list, fshe);
+			}
+		}
 	}
 	rw_exit(&fsrecp->fshfsr_lock);
 
-	if (fshi == NULL)
-		return ((*(vfsp->vfs_op->vfs_unmount))(vfsp, flag, cr));
+	/* Execute pre hooks */
+	for (fshe = list_head(&exec_list); fshe != NULL;
+	    fshe = list_next(&exec_list, fshe)) {
+		if (fshe->fshe_fshi->fshi_hooks.pre_unmount != NULL)
+			(*fshe->fshe_fshi->fshi_hooks.pre_unmount)(
+			    fshe->fshe_fshi->fshi_hooks.arg,
+			    &fshe->fshe_instance,
+			    &vfsp, &flag, &cr);
+	}
 
-	ret = (*fshi->fshi_hooks.unmount)(fshi, fshi->fshi_hooks.arg,
-	    vfsp, flag, cr);
-	fshi_rele(fshi);
+	ret = (*vfsp->vfs_op->vfs_unmount)(vfsp, flag, cr);
+
+	/* Execute post hooks */
+	while ((fshe = list_remove_tail(&exec_list)) != NULL) {
+		if (fshe->fshe_fshi->fshi_hooks.post_unmount != NULL)
+			ret = (*fshe->fshe_fshi->fshi_hooks.post_unmount)(
+			    ret, fshe->fshe_fshi->fshi_hooks.arg,
+			    fshe->fshe_instance,
+			    vfsp, flag, cr);
+		fshi_rele(fshe->fshe_fshi);
+		kmem_free(fshe, sizeof (*fshe));
+	}
+	list_destroy(&exec_list);
+
 	return (ret);
 }
 
@@ -858,7 +976,7 @@ fsh_fsrec_create()
 
 	fsrecp = (fsh_fsrecord_t *)kmem_zalloc(sizeof (*fsrecp), KM_SLEEP);
 	list_create(&fsrecp->fshfsr_list, sizeof (fsh_int_t),
-	    offsetof(fsh_int_t, fshi_next));
+	    offsetof(fsh_int_t, fshi_node));
 	rw_init(&fsrecp->fshfsr_lock, NULL, RW_DRIVER, NULL);
 	fsrecp->fshfsr_enabled = 1;
 	return (fsrecp);
@@ -924,7 +1042,7 @@ fsh_init(void)
 {
 	rw_init(&fsh_cblist_lock, NULL, RW_DRIVER, NULL);
 	list_create(&fsh_cblist, sizeof (fsh_callback_int_t),
-	    offsetof(fsh_callback_int_t, fshci_next));
+	    offsetof(fsh_callback_int_t, fshci_node));
 
 	mutex_init(&fsh_lock, NULL, MUTEX_DRIVER, NULL);
 
@@ -935,123 +1053,4 @@ fsh_init(void)
 	fsh_res_ptr = (void *)-1;
 
 	fsh_idspace = id_space_create("fsh", 0, fsh_limit);
-}
-
-/*
- * These functions are used to pass control to the next hook or underlying
- * vop or vfsop. It's client doesn't have to worry about any locking.
- */
-int
-fsh_next_read(fsh_int_t *fshi, vnode_t *vp, uio_t *uiop, int ioflag,
-	cred_t *cr, caller_context_t *ct)
-{
-	int ret;
-	fsh_fsrecord_t *fsrecp = vp->v_vfsp->vfs_fshrecord;
-
-	/*
-	 * The passed fshi is the previous hook (the one from which we've been
-	 * called). We need to find the next one.
-	 */
-	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
-	for (fshi = list_next(&fsrecp->fshfsr_list, fshi); fshi != NULL;
-	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
-		if (fshi->fshi_hooks.read != NULL)
-			if (fshi_hold(fshi))
-				break;
-	}
-	rw_exit(&fsrecp->fshfsr_lock);
-
-	if (fshi == NULL)
-		return ((*vp->v_op->vop_read)(vp, uiop, ioflag, cr, ct));
-
-	ret = (*fshi->fshi_hooks.read)(fshi, fshi->fshi_hooks.arg,
-	    vp, uiop, ioflag, cr, ct);
-	fshi_rele(fshi);
-	return (ret);
-}
-
-int
-fsh_next_write(fsh_int_t *fshi, vnode_t *vp, uio_t *uiop, int ioflag,
-	cred_t *cr, caller_context_t *ct)
-{
-	fsh_fsrecord_t *fsrecp = vp->v_vfsp->vfs_fshrecord;
-	int ret;
-
-	/*
-	 * The passed fshi is the previous hook (the one from which we've been
-	 * called). We need to find the next one.
-	 */
-	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
-	for (fshi = list_next(&fsrecp->fshfsr_list, fshi); fshi != NULL;
-	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
-		if (fshi->fshi_hooks.write != NULL)
-			if (fshi_hold(fshi))
-				break;
-	}
-	rw_exit(&fsrecp->fshfsr_lock);
-
-	if (fshi == NULL)
-		return ((*vp->v_op->vop_write)(vp, uiop, ioflag, cr, ct));
-
-	ret = (*fshi->fshi_hooks.write)(fshi, fshi->fshi_hooks.arg,
-	    vp, uiop, ioflag, cr, ct);
-	fshi_rele(fshi);
-	return (ret);
-}
-
-int
-fsh_next_mount(fsh_int_t *fshi, vfs_t *vfsp, vnode_t *mvp, struct mounta *uap,
-	cred_t *cr)
-{
-	fsh_fsrecord_t *fsrecp = vfsp->vfs_fshrecord;
-	int ret;
-
-	/*
-	 * The passed fshi is the previous hook (the one from which we've been
-	 * called). We need to find the next one.
-	 */
-	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
-	for (fshi = list_next(&fsrecp->fshfsr_list, fshi); fshi != NULL;
-	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
-		if (fshi->fshi_hooks.mount != NULL)
-			if (fshi_hold(fshi))
-				break;
-	}
-	rw_exit(&fsrecp->fshfsr_lock);
-
-	if (fshi == NULL)
-		return ((*(vfsp->vfs_op->vfs_mount))(vfsp, mvp, uap, cr));
-
-	ret = (*fshi->fshi_hooks.mount)(fshi, fshi->fshi_hooks.arg,
-	    vfsp, mvp, uap, cr);
-	fshi_rele(fshi);
-	return (ret);
-}
-
-int
-fsh_next_unmount(fsh_int_t *fshi, vfs_t *vfsp, int flag, cred_t *cr)
-{
-	fsh_fsrecord_t *fsrecp = vfsp->vfs_fshrecord;
-	int ret;
-
-	/*
-	 * The passed fshi is the previous hook (the one from which we've been
-	 * called). We need to find the next one.
-	 */
-	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
-	for (fshi = list_next(&fsrecp->fshfsr_list, fshi); fshi != NULL;
-	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
-		if (fshi->fshi_hooks.unmount != NULL)
-			if (fshi_hold(fshi))
-				break;
-	}
-	rw_exit(&fsrecp->fshfsr_lock);
-
-	if (fshi == NULL)
-		return ((*vfsp->vfs_op->vfs_unmount)(vfsp, flag, cr));
-
-	ret = (*fshi->fshi_hooks.unmount)(fshi, fshi->fshi_hooks.arg,
-	    vfsp, flag, cr);
-	fshi_rele(fshi);
-	return (ret);
 }

@@ -232,58 +232,81 @@ fsd_rand()
  * call, because it's valid until the hooks associated with it are removed.
  * If a hook is removed, it cannot be executing.
  */
-static int
-fsd_hook_read(fsh_int_t *fshi, void *arg, vnode_t *vp, uio_t *uiop,
-	int ioflag, cred_t *cr, caller_context_t *ct)
+static void
+fsd_hook_pre_read(void *arg, void **instancep, vnode_t **vpp, uio_t **uiopp,
+	int *ioflagp, cred_t **crp, caller_context_t **ctp)
 {
+	_NOTE(ARGUNUSED(ioflagp));
+	_NOTE(ARGUNUSED(crp));
+	_NOTE(ARGUNUSED(ctp));
+
 	fsd_int_t *fsdi = (fsd_int_t *)arg;
-	uint64_t count, less, less_chance;
+	uint64_t less_chance;
 
 	/*
 	 * It is used to keep an odd number of fsd_rand() calls in every
-	 * fsd_hook_read() call. That is desired because when a range of width
-	 * 2 is set as a parameter, we don't want to make it a constant.
+	 * fsd_hook_pre_read() call. That is desired because when a range of
+	 * width 2 is set as a parameter, we don't want to make it a constant.
 	 * The pseudo-random number generator returns a number with different
 	 * parity with every call. If this function is called in every
-	 * fsd_hook_read() execution even number of times, it would always be
-	 * the same % 2.
+	 * fsd_hook_pre_read() execution even number of times, it would always
+	 * be the same % 2.
 	 */
 	(void) fsd_rand();
 
-	ASSERT(vp->v_vfsp == fsdi->fsdi_vfsp);
+	ASSERT((*vpp)->v_vfsp == fsdi->fsdi_vfsp);
 
 	rw_enter(&fsdi->fsdi_lock, RW_READER);
 	less_chance = fsdi->fsdi_param.read_less_chance;
-	less = (uint64_t)fsd_rand() %
-	    (fsdi->fsdi_param.read_less_r[1] + 1 -
-	    fsdi->fsdi_param.read_less_r[0]) + fsdi->fsdi_param.read_less_r[0];
 	rw_exit(&fsdi->fsdi_lock);
 
-	count = uiop->uio_iov->iov_len;
 	if ((uint64_t)fsd_rand() % 100 < less_chance) {
 		extern size_t copyout_max_cached;
-		int ret;
+		int r[2];
+		uint64_t count, less;
 
-		if (count > less)
+		count = (*uiopp)->uio_iov->iov_len;
+		r[0] = fsdi->fsdi_param.read_less_r[0];
+		r[1] = fsdi->fsdi_param.read_less_r[1];
+		less = (uint64_t)fsd_rand() % (r[1] + 1 - r[0]) + r[0];
+
+		if (count > less) {
 			count -= less;
-		else
-			less = 0;
+			*instancep = kmem_alloc(sizeof (uint64_t), KM_SLEEP);
+			*((uint64_t *)instancep) = less;
+		} else {
+			*instancep = NULL;
+			return;
+		}
 
-		uiop->uio_iov->iov_len = count;
-		uiop->uio_resid = count;
+		(*uiopp)->uio_iov->iov_len = count;
+		(*uiopp)->uio_resid = count;
 		if (count <= copyout_max_cached)
-			uiop->uio_extflg = UIO_COPY_CACHED;
+			(*uiopp)->uio_extflg = UIO_COPY_CACHED;
 		else
-			uiop->uio_extflg = UIO_COPY_DEFAULT;
-
-		ret = fsh_next_read(fshi, vp, uiop, ioflag, cr, ct);
-		uiop->uio_resid += less;
-		return (ret);
+			(*uiopp)->uio_extflg = UIO_COPY_DEFAULT;
+	} else {
+		*instancep = NULL;
 	}
-
-	return (fsh_next_read(fshi, vp, uiop, ioflag, cr, ct));
 }
 
+static int
+fsd_hook_post_read(int ret, void *arg, void *instance, vnode_t *vp,
+	uio_t *uiop, int oflag, cred_t *cr, caller_context_t *ct)
+{
+	_NOTE(ARGUNUSED(arg));
+	_NOTE(ARGUNUSED(vp));
+	_NOTE(ARGUNUSED(oflag));
+	_NOTE(ARGUNUSED(cr));
+	_NOTE(ARGUNUSED(ct));
+
+	if (instance != NULL) {
+		uint64_t *lessp = instance;
+		uiop->uio_resid += *lessp;
+		kmem_free(lessp, sizeof (*lessp));
+	}
+	return (ret);
+}
 
 static void
 fsd_remove_cb(void *arg, fsh_handle_t handle)
@@ -352,7 +375,8 @@ fsd_install_disturber(vfs_t *vfsp, fsd_t *fsd)
 		rw_init(&fsdi->fsdi_lock, NULL, RW_DRIVER, NULL);
 
 		hook.arg = fsdi;
-		hook.read = fsd_hook_read;
+		hook.pre_read = fsd_hook_pre_read;
+		hook.post_read = fsd_hook_post_read;
 		hook.remove_cb = fsd_remove_cb;
 
 		/*

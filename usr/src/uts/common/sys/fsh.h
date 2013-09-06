@@ -28,23 +28,27 @@ extern "C" {
 typedef id_t fsh_handle_t;
 typedef id_t fsh_callback_handle_t;
 
-struct fsh_int;
-typedef struct fsh_int fsh_int_t;
-
 typedef struct fsh {
 	void *arg;
 	void (*remove_cb)(void *, fsh_handle_t);
 
 	/* vnode */
-	int (*read)(fsh_int_t *, void *, vnode_t *, uio_t *, int, cred_t *,
+	void (*pre_read)(void *, void **, vnode_t **, uio_t **, int *,
+		cred_t **, caller_context_t **);
+	int (*post_read)(int, void *, void *, vnode_t *, uio_t *, int, cred_t *,
 		caller_context_t *);
-	int (*write)(fsh_int_t *, void *, vnode_t *, uio_t *, int, cred_t *,
-		caller_context_t *);
+	void (*pre_write)(void *, void **, vnode_t **, uio_t **, int *,
+		cred_t **, caller_context_t **);
+	int (*post_write)(int, void *, void *, vnode_t *, uio_t *, int,
+		cred_t *, caller_context_t *);
 
 	/* vfs */
-	int (*mount)(fsh_int_t *, void *, vfs_t *, vnode_t *, struct mounta *,
-		cred_t *);
-	int (*unmount)(fsh_int_t *, void *, vfs_t *, int, cred_t *);
+	void (*pre_mount)(void *, void **, vfs_t **, vnode_t **,
+		struct mounta **, cred_t **);
+	int (*post_mount)(int, void *, void *, vfs_t *, vnode_t *,
+		struct mounta *, cred_t *);
+	void (*pre_unmount)(void *, void **, vfs_t **, int *, cred_t **);
+	int (*post_unmount)(int, void *, void *, vfs_t *, int, cred_t *);
 } fsh_t;
 
 typedef struct fsh_callback {
@@ -62,16 +66,6 @@ extern int fsh_callback_remove(fsh_callback_handle_t);
 
 extern void fsh_fs_enable(vfs_t *);
 extern void fsh_fs_disable(vfs_t *);
-
-/* fsh control passing */
-extern int fsh_next_read(fsh_int_t *, vnode_t *, uio_t *, int, cred_t *,
-		caller_context_t *);
-extern int fsh_next_write(fsh_int_t *, vnode_t *, uio_t *, int, cred_t *,
-		caller_context_t *);
-
-extern int fsh_next_mount(fsh_int_t *, vfs_t *, vnode_t *, struct mounta *uap,
-		cred_t *);
-extern int fsh_next_unmount(fsh_int_t *, vfs_t *, int, cred_t *);
 
 #ifdef __cplusplus
 }
