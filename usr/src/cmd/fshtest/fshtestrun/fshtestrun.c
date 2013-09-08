@@ -64,7 +64,6 @@ install_random_hook()
 	lremove(&free_hooks, elem);
 	linsert_head(&installed_hooks, val);
 
-	
 	if (fsht_install_hook(drv_fd, mntpath, val) == -1) 
 		perror("fsh_install_hook: ");
 }
@@ -129,7 +128,7 @@ run_test(int iterations)
 			char buf[100];
 			int choice = rand() % paths_count;
 
-			fd = open(paths[choice], O_RDONLY);
+			fd = open(paths[choice], O_RDWR);
 			if (fd == -1) {
 				(void) fprintf(stderr,
 				    "Error: Cannot open file %s: %s\n",
@@ -160,7 +159,6 @@ int
 main(int argc, char *argv[])
 {
 	FILE *files_fd;
-	int drv_fd;
 	int index;
 	int iterations, tests;
 	hook_t *elem;
@@ -187,8 +185,9 @@ main(int argc, char *argv[])
 		    "Maximum number of iterations is set to 10000\n");
 		return (-1);
 	}
+	mntpath = argv[3];
 
-	files_fd = fopen(argv[3], "r");
+	files_fd = fopen(argv[4], "r");
 	if (files_fd == NULL) {
 		perror("Error");
 		return (-1);
@@ -208,7 +207,6 @@ main(int argc, char *argv[])
 	paths_count = index;
 	(void) fclose(files_fd);
 	
-	mntpath = argv[4];
 
 
 	/* Run tests */

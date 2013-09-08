@@ -137,7 +137,9 @@ linsert_head(hook_list_t *list, int val)
 	node->val = val;
 	node->prev = NULL;
 	node->next = list->head;
-	list->head->prev = node;
+
+	if (list->head)
+		list->head->prev = node;
 	list->head = node;
 	list->count++;
 }
