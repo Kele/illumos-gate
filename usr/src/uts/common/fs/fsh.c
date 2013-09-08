@@ -35,55 +35,77 @@
  * inject client-defined behaviour into vfs/vnode calls. fsh works on
  * vfs_t granularity.
  *
+ * Note: In this document, both an fsh_t structure and hooking function for a
+ * vnodeop/vfsop is referred to as *hook*.
+ *
  *
  * 2. Overview.
  * fsh_t is the main object in the fsh. An fsh_t is a structure containing:
- * 	- pointers to hooking functions (named after corresponding
- *	vnodeops/vfsops)
- * 	- a pointer to an argument to pass (this is shared for all the
- * 	hooks in a given fsh_t)
- *	- a pointer to the *hook remove callback* - it's being fired after a
- *	hook is removed and the hook has stopped executing. It's safe to destroy
- *	any data associated with this hook.
+ * 	- pointers to hooking functions
+ * 	- an argument to pass (this is shared for all the hooks in a given
+ * 	fsh_t)
+ *	- a pointer to the *hook remove callback*
  *
  * The information from fsh_t is copied by the fsh and an fsh_handle_t
  * is returned. It should be used for further removing.
  *
  *
  * 3. Usage.
- * It is expected that vfs_t/vnode_t that are passed to fsh_foo() functions
- * are held by the caller when needed. fsh does no vfs_t/vnode_t locking.
+ * It is expected that vfs_t/vnode_t passed to fsh_foo() functions are held by
+ * the caller when needed. fsh does no vfs_t/vnode_t locking.
  *
- * fsh_t is a structure filled out by the client. If a client does not want
- * to add/remove a hook for function foo(), he should fill the foo field of
- * fsh_t with NULL. Every hook has a type of corresponding vfsop/vnodeop with
- * two additional arguments:
- *	- fsh_int_t *fsh_int - this argument MUST be passed to
- *	hook_next_foo(). fsh wouldn't know which hook to execute next
- *	without it
- *	- void *arg - this is the argument passed with fsh_t during
- *	installation
- *	- void (*remove_cb)(void *, fsh_handle_t) - hook remove callback
- *	(mentioned earlier); it's first argument is arg, the second is the
- *	handle
+ * fsh_t is a structure filled out by the client. It containts:
+ *	- pointers to hooking functions
+ *	- the argument passed to the hooks
+ *	- the *hook remove callback*
+ *
+ * If a client does not want to add a hook for function foo(), he should fill
+ * corresponding fields with NULLs. For every vfsop/vnodeop there are two
+ * fields: pre_foo() and post_foo(). These are the functions called before and
+ * after the next hook or underlying vfsop/vnodeop.
+ *
+ * Pre hooks take:
+ *	- arg
+ *	- pointer to a field containing void* - it should be filled whenever
+ *	the client wants to have some data shared by the pre and post hooks in
+ *	the same syscall. This is called the *instance data*.
+ *	- pointers to the arguments passed to the underlying vfsop/vnodeop
+ * Pre hooks return void.
+ *
+ * Post hooks take:
+ *	- value returned by the previous post hook or underlying vfsop/vnodeop
+ *	- arg
+ *	- pointer to the *instance data*
+ *	- arguments passed to the underlying vfsop/vnodeop
+ * Post hooks return an int, which should be treated as the vfsop/vnodeop
+ * return value.
+ * Memory allocated by pre hook MUST be deallocated by the post hook.
+ *
+ * Execution path of hooks A, B, C is as follows:
+ * foo()
+ * 	preA(argA, &instancepA, ...);
+ * 	preB(argB, &instancepB, ...);
+ * 	preC(argC, &instancepC, ...);
+ * 	ret = VOP_FOO();
+ * 	ret = postC(ret, argC, instancepC, ...);
+ * 	ret = postB(ret, argB, instancepB, ...);
+ *	ret = postC(ret, argA, instancepA, ...);
+ *	return (ret);
  *
  * After installation, an fsh_handle_t is returned to the caller.
  *
- * Every hook function is responsible for passing the control to the next
- * hook associated with a particular call. In order to provide an easy way to
- * modify the behaviour of a function call both before and after the
- * underlying vfsop/vnodeop (or next hook) execution, a hook has to call
- * fsh_next_foo() at some point. This function does necessary internal
- * operations and calls the next hook, until there's no hook left, then it
- * calls the underlying vfsop/vnodeop.
- * Example:
- * my_freefs(fsh_int_t *fsh_int, void *arg, vfs_t *vfsp) {
- * 	cmn_err(CE_NOTE, "freefs called!\n");
- *	return (fsh_next_freefs(fsh_int, vfsp));
- * }
+ * Hook remove callback - it's a function being fired after a hook is removed
+ * and no thread is going to execute it anymore. It's safe to destroy all the
+ * data associated with this hook.
  *
+ * It is guaranteed, that whenever a pre_hook() is called, there will be also
+ * post_hook() called within the same syscall.
  *
- * A client might want to fire callbacks when vfs_t's are being mounted
+ * If a hook (HNew) is installed/removed on/from a vfs_t within execution of
+ * another hook (HExec) installed on this vfs_t, the syscall that executes
+ * HExec won't fire HNew.
+ *
+ * A client might want to fire callbacks when vfs_ts are being mounted
  * or freed. There's an fsh_callback_t structure provided to install such
  * callbacks along with the API.
  * It is legal to call fsh_hook_{install,remove}() inside a mount callback
@@ -95,15 +117,12 @@
  *
  * 4. API
  * None of the APIs should be called during interrupt context above lock
- * level. The only exceptions are fsh_next_foo() functions, which do not use
- * locks.
+ * level.
  *
  * a) fsh.h
- * Any of these functions could be called inside a hook or a hook remove
- * callback.
- * fsh_callback_{install,remove}() must not be called inside a {mount,free}
- * callback. Doing so will cause a deadlock. Other functions can be called
- * inside {mount,free} callbacks.
+ * Any of these functions could be called in a hook, a hook remove callback or
+ * a {mount,free} callback.
+ *
  *
  * fsh_fs_enable(vfs_t *vfsp)
  * fsh_fs_disable(vfs_t *vfsp)
@@ -128,11 +147,6 @@
  *	the hook remove callback. The hook remove callback could be called
  *	inside fsh_hook_remove().
  *
- * fsh_next_foo(fsh_int_t *fsh_int, void *arg, ARGUMENTS)
- * 	This is the function which should be called once in every hook. It
- * 	does the necessary internal operations and passes control to the
- * 	next hook or, if there's no hook left, to the underlying
- * 	vfsop/vnodeop.
  *
  * fsh_callback_install(fsh_callback_t *callback)
  * fsh_callback_remove(fsh_callback_handle_t handle)
@@ -141,6 +155,7 @@
  * 	called right before VFS_FREEVFS() is called.
  *	The fsh_callback_install() returns a correct handle, or (-1) if
  *	hook/callback limit exceeded.
+ *
  *
  * b) fsh_impl.h (for vfs.c and vnode.c only)
  * fsh_init()
@@ -157,7 +172,7 @@
  * 	vfs_t are then destroyed. free callback is called before this function.
  *
  * fsh_foo(ARGUMENTS)
- * 	Function used to start executing the hook chain for a given call.
+ * 	Function used to execute the hook chain for a given syscall.
  *
  *
  * 5. Internals.
@@ -221,20 +236,19 @@
  * before calling VFS_FREEVFS(), after vfs_t's reference count drops to 0.
  *
  *
- * fsh_next_foo(fsh_int_t *fshi, ARGUMENTS)
- * 	This function is quite simple. It takes the fsh_int_t and passes control
- * 	to the next hook or to the underlying vnodeop/vfsop.
- *
- *
  * 6. Locking
  * a) public
  * fsh does no vfs_t nor vnode_t locking. It is expected that whenever it is
  * needed, the client does that.
  *
- * fsh_callback_{install,remove} must not be called inside a callback, because
- * it will cause a deadlock.
+ * No locks are held across hooks or hook remove callbacks execution. It is
+ * safe to use fsh API inside hooks and hook remove callbacks.
  *
- * b) internal
+ * There is a lock check inside fsh_callback_{install,remove}() and
+ * fsh_exec_{mount,free}_callbacks(), so it is safe to {mount,free} vfs_ts or
+ * {install,remove} callbacks inside {mount,free} callbacks.
+ *
+ * b) internals
  * Locking diagram:
  *
  *     fsh_hook_install()    fsh_hook_remove()   fsh_fsrec_destroy()
@@ -269,6 +283,11 @@
  * it destroys the unremoved hooks). It is used only when fsh_map needs to be
  * locked. The usage of this lock guarantees that the data in fsh_map and
  * fshfsr_lists is consistent.
+ *
+ * fsh_cb_owner is set to curthread by all functions that hold fsh_cb_lock and
+ * use the fsh API which might want to acquire fsh_cb_lock (again). Before
+ * acquiring fsh_cb_lock, there's always a check made if it's not already held
+ * by current thread.
  */
 
 
@@ -324,7 +343,9 @@ static list_t fsh_map;
 /*
  * Global list of fsh_callback_int_t.
  */
-static krwlock_t fsh_cblist_lock;
+static kmutex_t fsh_cb_lock;
+static kmutex_t fsh_cb_owner_lock;
+static kthread_t *fsh_cb_owner;
 static list_t fsh_cblist;
 
 /*
@@ -417,14 +438,6 @@ fsh_fs_disable(vfs_t *vfsp)
 /*
  * API used for installing hooks. fsh_handle_t is returned for further
  * actions (currently just removing) on this set of hooks.
- *
- * fsh_t fields:
- * - arg - argument passed to every hook
- * - remove_cb - remove callback, called after a hook is removed and all the
- *	threads stops executing it
- * - read, write, ... - pointers to hooks for corresponding vnodeops/vfsops;
- *	if there is no hook desired for an operation, it should be set to
- *	NULL
  *
  * It's important that the hooks are executed in LIFO installation order (they
  * are added to the head of the hook list).
@@ -591,9 +604,6 @@ fsh_hook_remove(fsh_handle_t handle)
  *
  * fsh_callback_handle_t is filled out by this function.
  *
- * This function must NOT be called in a callback, because it will cause
- * a deadlock.
- *
  * Returns (-1) if hook/callback limit exceeded.
  */
 fsh_callback_handle_t
@@ -601,6 +611,7 @@ fsh_callback_install(fsh_callback_t *callback)
 {
 	fsh_callback_int_t *fshci;
 	fsh_callback_handle_t handle;
+	int fsh_context;
 
 	if ((handle = id_alloc(fsh_idspace)) == -1)
 		return (-1);
@@ -609,10 +620,18 @@ fsh_callback_install(fsh_callback_t *callback)
 	(void) memcpy(&fshci->fshci_cb, callback, sizeof (fshci->fshci_cb));
 	fshci->fshci_handle = handle;
 
-	/* If it is called in a {mount,free} callback, causes deadlock. */
-	rw_enter(&fsh_cblist_lock, RW_WRITER);
+	mutex_enter(&fsh_cb_owner_lock);
+	fsh_context = fsh_cb_owner == curthread;
+	mutex_exit(&fsh_cb_owner_lock);
+
+	if (!fsh_context)
+		mutex_enter(&fsh_cb_lock);
+
+	ASSERT(MUTEX_HELD(&fsh_cb_lock));
 	list_insert_head(&fsh_cblist, fshci);
-	rw_exit(&fsh_cblist_lock);
+
+	if (!fsh_context)
+		mutex_exit(&fsh_cb_lock);
 
 	return (handle);
 }
@@ -620,18 +639,23 @@ fsh_callback_install(fsh_callback_t *callback)
 /*
  * API for removing global mount/free callbacks.
  *
- * This function must NOT be called in a callback, because it will cause
- * a deadlock.
- *
  * Returns (-1) if callback wasn't found, 0 otherwise.
  */
 int
 fsh_callback_remove(fsh_callback_handle_t handle)
 {
 	fsh_callback_int_t *fshci;
+	int fsh_context;
 
-	/* If it is called in a {mount,free} callback, causes deadlock. */
-	rw_enter(&fsh_cblist_lock, RW_WRITER);
+	mutex_enter(&fsh_cb_owner_lock);
+	fsh_context = fsh_cb_owner == curthread;
+	mutex_exit(&fsh_cb_owner_lock);
+
+	if (!fsh_context)
+		mutex_enter(&fsh_cb_lock);
+
+	ASSERT(MUTEX_HELD(&fsh_cb_lock));
+
 	for (fshci = list_head(&fsh_cblist); fshci != NULL;
 	    fshci = list_next(&fsh_cblist, fshci)) {
 		if (fshci->fshci_handle == handle) {
@@ -639,7 +663,9 @@ fsh_callback_remove(fsh_callback_handle_t handle)
 			break;
 		}
 	}
-	rw_exit(&fsh_cblist_lock);
+
+	if (!fsh_context)
+		mutex_exit(&fsh_cb_lock);
 
 	if (fshci == NULL)
 		return (-1);
@@ -665,15 +691,34 @@ fsh_exec_mount_callbacks(vfs_t *vfsp)
 {
 	fsh_callback_int_t *fshci;
 	fsh_callback_t *cb;
+	int fsh_context;
 
-	rw_enter(&fsh_cblist_lock, RW_READER);
+	mutex_enter(&fsh_cb_owner_lock);
+	fsh_context = fsh_cb_owner == curthread;
+	mutex_exit(&fsh_cb_owner_lock);
+
+	if (!fsh_context) {
+		mutex_enter(&fsh_cb_lock);
+		mutex_enter(&fsh_cb_owner_lock);
+		fsh_cb_owner = curthread;
+		mutex_exit(&fsh_cb_owner_lock);
+	}
+
+	ASSERT(MUTEX_HELD(&fsh_cb_lock));
+
 	for (fshci = list_head(&fsh_cblist); fshci != NULL;
 	    fshci = list_next(&fsh_cblist, fshci)) {
 		cb = &fshci->fshci_cb;
 		if (cb->fshc_mount != NULL)
 			(*(cb->fshc_mount))(vfsp, cb->fshc_arg);
 	}
-	rw_exit(&fsh_cblist_lock);
+
+	if (!fsh_context) {
+		mutex_enter(&fsh_cb_owner_lock);
+		fsh_cb_owner = NULL;
+		mutex_exit(&fsh_cb_owner_lock);
+		mutex_exit(&fsh_cb_lock);
+	}
 }
 
 /*
@@ -689,15 +734,34 @@ fsh_exec_free_callbacks(vfs_t *vfsp)
 {
 	fsh_callback_int_t *fshci;
 	fsh_callback_t *cb;
+	int fsh_context;
 
-	rw_enter(&fsh_cblist_lock, RW_READER);
+	mutex_enter(&fsh_cb_owner_lock);
+	fsh_context = fsh_cb_owner == curthread;
+	mutex_exit(&fsh_cb_owner_lock);
+
+	if (!fsh_context) {
+		mutex_enter(&fsh_cb_lock);
+		mutex_enter(&fsh_cb_owner_lock);
+		fsh_cb_owner = curthread;
+		mutex_exit(&fsh_cb_owner_lock);
+	}
+
+	ASSERT(MUTEX_HELD(&fsh_cb_lock));
+
 	for (fshci = list_head(&fsh_cblist); fshci != NULL;
 	    fshci = list_next(&fsh_cblist, fshci)) {
 		cb = &fshci->fshci_cb;
 		if (cb->fshc_free != NULL)
 			(*(cb->fshc_free))(vfsp, cb->fshc_arg);
 	}
-	rw_exit(&fsh_cblist_lock);
+
+	if (!fsh_context) {
+		mutex_enter(&fsh_cb_owner_lock);
+		fsh_cb_owner = NULL;
+		mutex_exit(&fsh_cb_owner_lock);
+		mutex_exit(&fsh_cb_lock);
+	}
 }
 
 /*
@@ -1040,7 +1104,8 @@ fsh_fsrec_destroy(struct fsh_fsrecord *volatile fsrecp)
 void
 fsh_init(void)
 {
-	rw_init(&fsh_cblist_lock, NULL, RW_DRIVER, NULL);
+	mutex_init(&fsh_cb_lock, NULL, MUTEX_DRIVER, NULL);
+	mutex_init(&fsh_cb_owner_lock, NULL, MUTEX_DRIVER, NULL);
 	list_create(&fsh_cblist, sizeof (fsh_callback_int_t),
 	    offsetof(fsh_callback_int_t, fshci_node));
 

@@ -161,7 +161,7 @@
  * Because of the fact that fsd_remove_cb() could be called both in the context
  * of the thread that executes fsh_hook_remove() or outside the fsd, we need to
  * use fsd_rem_thread in order not to cause a deadlock. fsh_hook_remove() could
- * be called by at most one thread inside fsd (fsd_remove_disturber() holds
+ * be called by at most one thread inside fsd (fsd_disturber_remove() holds
  * fsd_lock). We just have to check inside fsd_remove_cb() if it was called
  * from fsh_hook_remove() or not. We use fsd_rem_thread to determine that.
  *
@@ -180,7 +180,7 @@ typedef struct fsd_int {
 	fsh_handle_t	fsdi_handle;	/* we use fsh's handle in fsd */
 	vfs_t		*fsdi_vfsp;
 	int		fsdi_doomed;
-	list_node_t	fsdi_next;
+	list_node_t	fsdi_node;
 } fsd_int_t;
 
 static dev_info_t *fsd_devi;
@@ -262,7 +262,7 @@ fsd_hook_pre_read(void *arg, void **instancep, vnode_t **vpp, uio_t **uiopp,
 
 	if ((uint64_t)fsd_rand() % 100 < less_chance) {
 		extern size_t copyout_max_cached;
-		int r[2];
+		uint64_t r[2];
 		uint64_t count, less;
 
 		count = (*uiopp)->uio_iov->iov_len;
@@ -273,7 +273,7 @@ fsd_hook_pre_read(void *arg, void **instancep, vnode_t **vpp, uio_t **uiopp,
 		if (count > less) {
 			count -= less;
 			*instancep = kmem_alloc(sizeof (uint64_t), KM_SLEEP);
-			*((uint64_t *)instancep) = less;
+			*(*(uint64_t **)instancep) = less;
 		} else {
 			*instancep = NULL;
 			return;
@@ -347,7 +347,7 @@ fsd_remove_cb(void *arg, fsh_handle_t handle)
  * Returns 0 on success and non-zero if hook limit exceeded.
  */
 static int
-fsd_install_disturber(vfs_t *vfsp, fsd_t *fsd)
+fsd_disturber_install(vfs_t *vfsp, fsd_t *fsd)
 {
 	fsd_int_t *fsdi;
 
@@ -396,7 +396,7 @@ fsd_install_disturber(vfs_t *vfsp, fsd_t *fsd)
 }
 
 static int
-fsd_remove_disturber(vfs_t *vfsp)
+fsd_disturber_remove(vfs_t *vfsp)
 {
 	fsd_int_t *fsdi;
 
@@ -434,7 +434,7 @@ fsd_callback_mount(vfs_t *vfsp, void *arg)
 
 	mutex_enter(&fsd_lock);
 	if (fsd_omni_param != NULL)
-		error = fsd_install_disturber(vfsp, fsd_omni_param);
+		error = fsd_disturber_install(vfsp, fsd_omni_param);
 	mutex_exit(&fsd_lock);
 
 	if (error != 0) {
@@ -485,7 +485,7 @@ fsd_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	ddi_report_dev(fsd_devi);
 
 	list_create(&fsd_list, sizeof (fsd_int_t),
-	    offsetof(fsd_int_t, fsdi_next));
+	    offsetof(fsd_int_t, fsdi_node));
 
 	fsd_rand_seed = gethrtime();
 
@@ -535,6 +535,10 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	fsd_devi = NULL;
 
 	mutex_enter(&fsd_lock);
+	/*
+	 * After we set fsd_detaching to 1, hook remove callback (fsd_remove_cb)
+	 * won't try to remove entries from fsd_list.
+	 */
 	fsd_detaching = 1;
 	while ((fsdi = list_remove_head(&fsd_list)) != NULL)
 		if (fsdi->fsdi_doomed == 0) {
@@ -654,7 +658,7 @@ fsd_ioctl_disturb(fsd_ioc_t *ioc, int mode, int *rvalp)
 	}
 
 	mutex_enter(&fsd_lock);
-	rv = fsd_install_disturber(file->f_vnode->v_vfsp, &dis.fsdd_param);
+	rv = fsd_disturber_install(file->f_vnode->v_vfsp, &dis.fsdd_param);
 	mutex_exit(&fsd_lock);
 
 	releasef((int)dis.fsdd_mnt);
@@ -807,7 +811,7 @@ fsd_ioctl_disturb_off(fsd_ioc_t *ioc, int mode, int *rvalp)
 	}
 
 	mutex_enter(&fsd_lock);
-	*rvalp = fsd_remove_disturber(file->f_vnode->v_vfsp);
+	*rvalp = fsd_disturber_remove(file->f_vnode->v_vfsp);
 	releasef((int)fd);
 	mutex_exit(&fsd_lock);
 
