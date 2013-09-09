@@ -95,7 +95,7 @@ print_hooks(const char *func)
 {
 	hook_t *elem = lhead(&installed_hooks);
 	while (elem != NULL) {
-		(void) printf("%s %d\n", func, elem->val);
+		(void) printf("fsht_hook_pre_%s %d\n", func, elem->val);
 		elem = lnext(elem);
 	}
 }
@@ -112,6 +112,7 @@ run_test(int iterations)
 
 
 	for (i = 0; i < iterations; i++) {
+		usleep(100);
 		switch (op = rand() % 4) {
 		case 0:
 			install_random_hook();	
@@ -138,11 +139,11 @@ run_test(int iterations)
 
 			if (op == 2) {
 				(void) read(fd, buf, 100);
-				print_hooks("fsht_hook_read");
+				print_hooks("read");
 
 			} else { /* op == 3 */
 				(void) write(fd, buf, 100);
-				print_hooks("fsht_hook_write");
+				print_hooks("write");
 			}
 
 			(void) close(fd);
@@ -227,7 +228,6 @@ main(int argc, char *argv[])
 	lclear(&free_hooks);
 
 	fsht_close(drv_fd);
-	(void) printf("Done!\n");
 
 	return (0);
 }
