@@ -54,7 +54,7 @@
  * It is expected that vfs_t/vnode_t passed to fsh_foo() functions are held by
  * the caller when needed. fsh does no vfs_t/vnode_t locking.
  *
- * fsh_t is a structure filled out by the client. It containts:
+ * fsh_t is a structure filled out by the client. It contains:
  *	- pointers to hooking functions
  *	- the argument passed to the hooks
  *	- the *hook remove callback*
@@ -68,7 +68,7 @@
  *	- arg
  *	- pointer to a field containing void* - it should be filled whenever
  *	the client wants to have some data shared by the pre and post hooks in
- *	the same syscall. This is called the *instance data*.
+ *	the same syscall execution. This is called the *instance data*.
  *	- pointers to the arguments passed to the underlying vfsop/vnodeop
  * Pre hooks return void.
  *
@@ -79,7 +79,7 @@
  *	- arguments passed to the underlying vfsop/vnodeop
  * Post hooks return an int, which should be treated as the vfsop/vnodeop
  * return value.
- * Memory allocated by pre hook MUST be deallocated by the post hook.
+ * Memory allocated by pre hook must be deallocated by the post hook.
  *
  * Execution path of hooks A, B, C is as follows:
  * foo()
@@ -96,7 +96,7 @@
  *
  * Hook remove callback - it's a function being fired after a hook is removed
  * and no thread is going to execute it anymore. It's safe to destroy all the
- * data associated with this hook.
+ * data associated with this hook inside it.
  *
  * It is guaranteed, that whenever a pre_hook() is called, there will be also
  * post_hook() called within the same syscall.
@@ -114,14 +114,14 @@
  * After vfs_t's free callback returns, all the handles associated with the
  * hooks installed on this vfs_t are invalid and must not be used.
  *
- *
  * 4. API
  * None of the APIs should be called during interrupt context above lock
  * level.
  *
  * a) fsh.h
- * Any of these functions could be called in a hook, a hook remove callback or
- * a {mount,free} callback.
+ * Any of these functions could be called in a hook or a hook remove callback.
+ * The only functions that must not be called inside a {mount,free} callback are
+ * fsd_callback_{install,remove}. Using them will cause a deadlock.
  *
  *
  * fsh_fs_enable(vfs_t *vfsp)
@@ -204,9 +204,9 @@
  * 	- a flag which tells whether fsh is enabled on this vfs_t
  *
  *
- * fsh_prepare_fsrec rule:
+ * fsh_fsrec_prepare rule:
  * Every function that needs vfsp->vfs_fshrecord has to call
- * fsh_prepare_fsrec() first. If and only if the call is made, it is safe to
+ * fsh_fsrec_prepare() first. If and only if the call is made, it is safe to
  * use vfsp->vfs_fshrecord.
  *
  * Unfortunately, because of unexpected behaviour of some filesystems (no use
@@ -214,18 +214,30 @@
  * fsh_fshrecord_t structure. The approach being used here is to check if it's
  * initialised in every call. Because of the fact that no lock could be used
  * here (the same problem with initialisation), a spinlock is used.  This is
- * explained in more detail in a comment before fsh_prepare_fsrec(). After
+ * explained in more detail in a comment before fsh_fsrec_prepare(). After
  * calling fsh_preapre_fsrec() it's completely safe to keep the vfs_fshrecord
  * pointer locally, because it won't be changed until vfs_free() is called.
  *
- * The only exception from the fsh_prepare_fsrec() rule is vfs_free(),
- * where there is expected that no other fsh calls would be made for the
+ * Exceptions from this rule:
+ * - vfs_free() - it is expected that no other fsh calls would be made for the
  * vfs_t that's being freed. That's why vfs_fshrecord could be only NULL or a
  * valid pointer and could not be concurrently accessed.
+ * - fshi_rele() - fsh_hook_install() comes before first fshi_rele() call;
+ * the fsh_fsrecord_t has been initialised there
+ *
  *
  * When there are no fsh functions (that use a particular fsh_fsrecord_t)
  * executing, the vfs_fshrecord pointer won't be equal to fsh_res_ptr. It
  * would be NULL or a pointer to an initialised fsh_fsrecord_t.
+ *
+ * It is required and sufficient to check if fsh_fsrecord_t is not NULL before
+ * passing it to fsh_fsrec_destroy. We don't have to check if it is not equal
+ * to fsh_res_ptr, because all the fsh API calls involving this vfs_t should
+ * end before vfs_free() is called (outside the fsh, fsh_fsrecord is never
+ * equal to fsh_res_ptr). That is guaranteed by the explicit requirement that
+ * the caller of fsh API holds the vfs_t when needed. fsh_hook_remove() must not
+ * be called either, because the handles are invalidated after free callback has
+ * fired.
  *
  *
  * Callbacks:
@@ -244,28 +256,29 @@
  * No locks are held across hooks or hook remove callbacks execution. It is
  * safe to use fsh API inside hooks and hook remove callbacks.
  *
- * There is a lock check inside fsh_callback_{install,remove}() and
- * fsh_exec_{mount,free}_callbacks(), so it is safe to {mount,free} vfs_ts or
- * {install,remove} callbacks inside {mount,free} callbacks.
+ * fsh_cb_lock is held across {mount,free} callbacks. Calling
+ * fsh_callback_{install,remove} inside of a callback will cause a deadlock.
  *
  * b) internals
  * Locking diagram:
  *
- *     fsh_hook_install()    fsh_hook_remove()   fsh_fsrec_destroy()
- *           |                     |                |
- *           |                     |                |
- *           +------------------+  |   +------------+
- *                              |  |   |
- *                              V  V   V
- *                              fsh_lock
- *                                 |   |
- *                                 |   +----- fshfsr_lock, RW_WRITER ---+
- *                                 |                                    |
- *                                 V                                    |
- *               +---------------------------------------+              |
- *               |               fsh_map                 |              |
- *               |                                       |              |
- *          +----|-> vfsp->vfs_fshrecord->fshfsr_list <--|--------------+
+ *     fsh_hook_remove()          fsh_hook_install()   fsh_fsrec_destroy()
+ *           |                            |                |
+ *           |                            |                |
+ *           +------------------+         |   +------------+
+ *           |                  |         |   |
+ *           |                  V         |   |
+ *           V               +------------|---|-+
+ *      fshi_rele()          |  fsh_lock  |   | |
+ *      (sometimes)          +------------|---|-+
+ *                                 |      |   |
+ *                                 |      +---+-- fshfsr_lock, RW_WRITER -+
+ *                                 |                                      |
+ *                                 V                                      |
+ *               +---------------------------------------+                |
+ *               |               fsh_map                 |                |
+ *               |                                       |                |
+ *          +----|-> vfsp->vfs_fshrecord->fshfsr_list <--|----------------+
  *          |    +------------------------------^--------+
  *          |                                   |
  *          |                                   |
@@ -278,16 +291,18 @@
  *                                        fsh_hook_remove()
  *                                        fsh_read(), fsh_write(), ...
  *
+ *
  * fsh_lock is a global lock for adminsitrative path (fsh_hook_install,
  * fsh_hook_remove) and fsh_fsrec_destroy() (which is semi-administrative, since
  * it destroys the unremoved hooks). It is used only when fsh_map needs to be
  * locked. The usage of this lock guarantees that the data in fsh_map and
  * fshfsr_lists is consistent.
  *
- * fsh_cb_owner is set to curthread by all functions that hold fsh_cb_lock and
- * use the fsh API which might want to acquire fsh_cb_lock (again). Before
- * acquiring fsh_cb_lock, there's always a check made if it's not already held
- * by current thread.
+ * In order to make calling callbacks inside callbacks possible, fsh_cb_owner is
+ * set by fsh_exec_{mount,free} callbacks to the thread that owns the
+ * fsh_cb_lock.  It's always checked if we are owners of the mutex before
+ * entering it.
+ *
  */
 
 
@@ -362,7 +377,7 @@ int fsh_limit = INT_MAX;
 static id_space_t *fsh_idspace;
 
 /*
- * fsh_prepare_fsrec()
+ * fsh_fsrec_prepare()
  *
  * Important note:
  * Before using this function, fsh_init() MUST be called. We do that in
@@ -393,7 +408,7 @@ static id_space_t *fsh_idspace;
  *	the vfs_t, which is expected from the caller of fsh API.
  */
 static void
-fsh_prepare_fsrec(vfs_t *vfsp)
+fsh_fsrec_prepare(vfs_t *vfsp)
 {
 	fsh_fsrecord_t *fsrec;
 
@@ -418,7 +433,7 @@ fsh_prepare_fsrec(vfs_t *vfsp)
 void
 fsh_fs_enable(vfs_t *vfsp)
 {
-	fsh_prepare_fsrec(vfsp);
+	fsh_fsrec_prepare(vfsp);
 
 	rw_enter(&vfsp->vfs_fshrecord->fshfsr_lock, RW_WRITER);
 	vfsp->vfs_fshrecord->fshfsr_enabled = 1;
@@ -428,7 +443,7 @@ fsh_fs_enable(vfs_t *vfsp)
 void
 fsh_fs_disable(vfs_t *vfsp)
 {
-	fsh_prepare_fsrec(vfsp);
+	fsh_fsrec_prepare(vfsp);
 
 	rw_enter(&vfsp->vfs_fshrecord->fshfsr_lock, RW_WRITER);
 	vfsp->vfs_fshrecord->fshfsr_enabled = 0;
@@ -452,7 +467,7 @@ fsh_hook_install(vfs_t *vfsp, fsh_t *hooks)
 	fsh_handle_t	handle;
 	fsh_int_t	*fshi;
 
-	fsh_prepare_fsrec(vfsp);
+	fsh_fsrec_prepare(vfsp);
 
 	if ((handle = id_alloc(fsh_idspace)) == -1)
 		return (-1);
@@ -518,14 +533,12 @@ fshi_rele(fsh_int_t *fshi)
 		 * At this point, we are sure that fsh_hook_remove() has been
 		 * called, that's why we don't remove the fshi from fsh_map.
 		 * fsh_hook_remove() did that already.
+		 * There is also no need to call fsh_fsrec_prepare() here.
 		 */
 		fsh_fsrecord_t *fsrecp;
 
-		if (fshi->fshi_hooks.remove_cb != NULL)
-			(*fshi->fshi_hooks.remove_cb)(
-			    fshi->fshi_hooks.arg, fshi->fshi_handle);
 		/*
-		 * We don't have to call fsh_prepare_fsrec() here.
+		 * We don't have to call fsh_fsrec_prepare() here.
 		 * fsh_fsrecord_t is already initialised, because we've found a
 		 * mapping for the given handle.
 		 */
@@ -536,6 +549,10 @@ fshi_rele(fsh_int_t *fshi)
 		rw_enter(&fsrecp->fshfsr_lock, RW_WRITER);
 		list_remove(&fsrecp->fshfsr_list, fshi);
 		rw_exit(&fsrecp->fshfsr_lock);
+
+		if (fshi->fshi_hooks.remove_cb != NULL)
+			(*fshi->fshi_hooks.remove_cb)(
+			    fshi->fshi_hooks.arg, fshi->fshi_handle);
 
 		id_free(fsh_idspace, fshi->fshi_handle);
 		mutex_destroy(&fshi->fshi_lock);
@@ -605,13 +622,14 @@ fsh_hook_remove(fsh_handle_t handle)
  * fsh_callback_handle_t is filled out by this function.
  *
  * Returns (-1) if hook/callback limit exceeded.
+ *
+ * Calling this function in a {mount,free} callback will cause a deadlock.
  */
 fsh_callback_handle_t
 fsh_callback_install(fsh_callback_t *callback)
 {
 	fsh_callback_int_t *fshci;
 	fsh_callback_handle_t handle;
-	int fsh_context;
 
 	if ((handle = id_alloc(fsh_idspace)) == -1)
 		return (-1);
@@ -620,18 +638,9 @@ fsh_callback_install(fsh_callback_t *callback)
 	(void) memcpy(&fshci->fshci_cb, callback, sizeof (fshci->fshci_cb));
 	fshci->fshci_handle = handle;
 
-	mutex_enter(&fsh_cb_owner_lock);
-	fsh_context = fsh_cb_owner == curthread;
-	mutex_exit(&fsh_cb_owner_lock);
-
-	if (!fsh_context)
-		mutex_enter(&fsh_cb_lock);
-
-	ASSERT(MUTEX_HELD(&fsh_cb_lock));
+	mutex_enter(&fsh_cb_lock);
 	list_insert_head(&fsh_cblist, fshci);
-
-	if (!fsh_context)
-		mutex_exit(&fsh_cb_lock);
+	mutex_exit(&fsh_cb_lock);
 
 	return (handle);
 }
@@ -640,21 +649,15 @@ fsh_callback_install(fsh_callback_t *callback)
  * API for removing global mount/free callbacks.
  *
  * Returns (-1) if callback wasn't found, 0 otherwise.
+ *
+ * Calling this function in a {mount,free} callback will cause a deadlock.
  */
 int
 fsh_callback_remove(fsh_callback_handle_t handle)
 {
 	fsh_callback_int_t *fshci;
-	int fsh_context;
 
-	mutex_enter(&fsh_cb_owner_lock);
-	fsh_context = fsh_cb_owner == curthread;
-	mutex_exit(&fsh_cb_owner_lock);
-
-	if (!fsh_context)
-		mutex_enter(&fsh_cb_lock);
-
-	ASSERT(MUTEX_HELD(&fsh_cb_lock));
+	mutex_enter(&fsh_cb_lock);
 
 	for (fshci = list_head(&fsh_cblist); fshci != NULL;
 	    fshci = list_next(&fsh_cblist, fshci)) {
@@ -664,8 +667,7 @@ fsh_callback_remove(fsh_callback_handle_t handle)
 		}
 	}
 
-	if (!fsh_context)
-		mutex_exit(&fsh_cb_lock);
+	mutex_exit(&fsh_cb_lock);
 
 	if (fshci == NULL)
 		return (-1);
@@ -770,7 +772,7 @@ fsh_exec_free_callbacks(vfs_t *vfsp)
  * fsh_xxx() tries to find the first non-NULL xxx hook on the fshfsr_list. If it
  * does, it executes it. If not, underlying vnodeop/vfsop is called.
  *
- * These interfaces are using fsh_res_ptr (in fsh_prepare_fsrec()), so it's
+ * These interfaces are using fsh_res_ptr (in fsh_fsrec_prepare()), so it's
  * absolutely necessary to call fsh_init() before using them. That's done in
  * vfsinit().
  *
@@ -792,7 +794,7 @@ fsh_read(vnode_t *vp, uio_t *uiop, int ioflag, cred_t *cr,
 	fsh_exec_t *fshe;
 	list_t exec_list;
 
-	fsh_prepare_fsrec(vp->v_vfsp);
+	fsh_fsrec_prepare(vp->v_vfsp);
 	fsrecp = vp->v_vfsp->vfs_fshrecord;
 
 	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
@@ -854,7 +856,7 @@ fsh_write(vnode_t *vp, uio_t *uiop, int ioflag, cred_t *cr,
 	fsh_exec_t *fshe;
 	list_t exec_list;
 
-	fsh_prepare_fsrec(vp->v_vfsp);
+	fsh_fsrec_prepare(vp->v_vfsp);
 	fsrecp = vp->v_vfsp->vfs_fshrecord;
 
 	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
@@ -915,7 +917,7 @@ fsh_mount(vfs_t *vfsp, vnode_t *mvp, struct mounta *uap, cred_t *cr)
 	fsh_exec_t *fshe;
 	list_t exec_list;
 
-	fsh_prepare_fsrec(vfsp);
+	fsh_fsrec_prepare(vfsp);
 	fsrecp = vfsp->vfs_fshrecord;
 
 	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
@@ -976,7 +978,7 @@ fsh_unmount(vfs_t *vfsp, int flag, cred_t *cr)
 	fsh_exec_t *fshe;
 	list_t exec_list;
 
-	fsh_prepare_fsrec(vfsp);
+	fsh_fsrec_prepare(vfsp);
 	fsrecp = vfsp->vfs_fshrecord;
 
 	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
@@ -1029,7 +1031,7 @@ fsh_unmount(vfs_t *vfsp, int flag, cred_t *cr)
 }
 
 /*
- * This is the funtion used by fsh_prepare_fsrec() to allocate a new
+ * This is the funtion used by fsh_fsrec_prepare() to allocate a new
  * fsh_fsrecord. This function is called by the first function which
  * access the vfs_fshrecord and finds out it's NULL.
  */
@@ -1048,20 +1050,12 @@ fsh_fsrec_create()
 
 
 /*
- * This call can be used ONLY in vfs_free(). It's assumed that no other
- * fsh calls using the vfs_t that owns the fsh_fsrecord to be destroyed
- * are executing while a call to fsh_fsrec_destroy() is made. With this
- * assumptions, no concurrency issues occur.
+ * This call must be used ONLY in vfs_free().
  *
- * Before calling this function outside the fsh, it's sufficient and
- * required to check if the passed fsh_fsrecord * is not NULL. We don't
- * have to check if it is not equal to fsh_res_ptr, because all the fsh API
- * calls involving this vfs_t should end before vfs_free() is called
- * (outside the fsh, fsh_fsrecord is never equal to fsh_res_ptr). That is
- * guaranteed by the explicit requirement that the caller of fsh API holds
- * the vfs_t when needed.
+ * It is required and sufficient to check if fsh_fsrecord_t is not NULL before
+ * passing it to fsh_fsrec_destroy.
  *
- * All the remaining hooks are being removed.
+ * All the remaining hooks are being removed here.
  */
 void
 fsh_fsrec_destroy(struct fsh_fsrecord *volatile fsrecp)
@@ -1073,8 +1067,9 @@ fsh_fsrec_destroy(struct fsh_fsrecord *volatile fsrecp)
 	_NOTE(CONSTCOND)
 	while (1) {
 		mutex_enter(&fsh_lock);
-		/* No need here to hold fshfsr_lock */
+		rw_enter(&fsrecp->fshfsr_lock, RW_WRITER);
 		fshi = list_remove_head(&fsrecp->fshfsr_list);
+		rw_exit(&fsrecp->fshfsr_lock);
 		if (fshi == NULL) {
 			mutex_exit(&fsh_lock);
 			break;
@@ -1086,6 +1081,7 @@ fsh_fsrec_destroy(struct fsh_fsrecord *volatile fsrecp)
 		if (fshi->fshi_hooks.remove_cb != NULL)
 			(*fshi->fshi_hooks.remove_cb)(fshi->fshi_hooks.arg,
 			    fshi->fshi_handle);
+
 		id_free(fsh_idspace, fshi->fshi_handle);
 		mutex_destroy(&fshi->fshi_lock);
 		kmem_free(fshi, sizeof (*fshi));
@@ -1114,7 +1110,7 @@ fsh_init(void)
 	list_create(&fsh_map, sizeof (fsh_int_t), offsetof(fsh_int_t,
 	    fshi_global));
 
-	/* See comment above fsh_prepare_fsrec() */
+	/* See comment above fsh_fsrec_prepare() */
 	fsh_res_ptr = (void *)-1;
 
 	fsh_idspace = id_space_create("fsh", 0, fsh_limit);

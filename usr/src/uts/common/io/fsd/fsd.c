@@ -137,7 +137,7 @@
  * When fsd_enabled is nonzero, fsd_detach() fails.
  *
  * These mount callback is used for installing injections on newly mounted
- * vfs_t's (omnipresent).
+ * vfs_t's (omnipresent). The free callback is used for cleaning up.
  *
  * The list of currently installed hooks is kept in fsd_list.
  *
@@ -426,7 +426,7 @@ fsd_disturber_remove(vfs_t *vfsp)
 }
 
 static void
-fsd_callback_mount(vfs_t *vfsp, void *arg)
+fsd_mount_callback(vfs_t *vfsp, void *arg)
 {
 	_NOTE(ARGUNUSED(arg));
 
@@ -445,6 +445,59 @@ fsd_callback_mount(vfs_t *vfsp, void *arg)
 		    refstr_value(mntref));
 		refstr_rele(mntref);
 	}
+}
+
+/*
+ * Although, we might delete the fsd_free_callback(), it would make the whole
+ * proces less clear. There's a time window between firing free callbacks and
+ * freeing the vfs_t in fsd_disturber_remove() could be called. fsh can
+ * deal with invalid handles (until there is no collision), but we'd like to
+ * have a nice assertion instead.
+ */
+static void
+fsd_free_callback(vfs_t *vfsp, void *arg)
+{
+	_NOTE(ARGUNUSED(arg));
+
+	fsd_int_t *fsdi;
+
+	mutex_enter(&fsd_lock);
+	for (fsdi = list_head(&fsd_list); fsdi != NULL;
+	    fsdi = list_next(&fsd_list, fsdi)) {
+		if (fsdi->fsdi_vfsp == vfsp) {
+			if (fsdi->fsdi_doomed)
+				continue;
+
+			fsdi->fsdi_doomed = 1;
+			/*
+			 * We make such assertion, because fsd_lock is held
+			 * and that means that neither fsd_disturber_remove()
+			 * nor fsd_remove_cb() has removed this hook in
+			 * different thread.
+			 */
+			mutex_enter(&fsd_rem_thread_lock);
+			fsd_rem_thread = curthread;
+			mutex_exit(&fsd_rem_thread_lock);
+
+			ASSERT(fsh_hook_remove(fsdi->fsdi_handle) == 0);
+
+			mutex_enter(&fsd_rem_thread_lock);
+			fsd_rem_thread = NULL;
+			mutex_exit(&fsd_rem_thread_lock);
+
+			/*
+			 * Since there is at most one hook installed by fsd,
+			 * we break.
+			 */
+			break;
+		}
+	}
+	/*
+	 * We can't write ASSERT(fsdi != NULL) because it is possible that
+	 * there was a concurrent call to fsd_disturber_remove() or
+	 * fsd_detach().
+	 */
+	mutex_exit(&fsd_lock);
 }
 
 static void
@@ -493,7 +546,8 @@ fsd_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	mutex_init(&fsd_rem_thread_lock, NULL, MUTEX_DRIVER, NULL);
 	cv_init(&fsd_cv_empty, NULL, CV_DRIVER, NULL);
 
-	cb.fshc_mount = fsd_callback_mount;
+	cb.fshc_mount = fsd_mount_callback;
+	cb.fshc_free = fsd_free_callback;
 	cb.fshc_arg = fsd_omni_param;
 	fsd_cb_handle = fsh_callback_install(&cb);
 	if (fsd_cb_handle == -1) {
@@ -534,13 +588,34 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	ddi_remove_minor_node(dip, NULL);
 	fsd_devi = NULL;
 
+	/*
+	 * 1. Remove the hooks.
+	 * 2. Remove the callbacks.
+	 *
+	 * This order has to be preserved, because of the fact that
+	 * fsd_free_callback() is the last stop before a vfs_t is destroyed.
+	 * Without it, this might happen:
+	 * 		vfs_free()			fsd_detach()
+	 * 1.	Handle for the hook is
+	 * 	invalidated.
+	 * 2.	Fired fsd_remove_cb().
+	 * 3.	fsd_remove_cb() hasn't yet    fsd_lock is acquired.
+	 * 	acquired the fsd_lock.
+	 * 4	Waiting for fsd_lock. That    ASSERT(fsh_hook_remove(..) == 0);
+	 * 	means that the hook hasn't    failed, because the handle is
+	 * 	been removed from fsd_hooks   already invalid.
+	 * 	fsd_hooks yet.
+	 *
+	 * The ASSERT() here is nice and without a good reason, we don't want
+	 * to get rid of it.
+	 */
 	mutex_enter(&fsd_lock);
 	/*
 	 * After we set fsd_detaching to 1, hook remove callback (fsd_remove_cb)
 	 * won't try to remove entries from fsd_list.
 	 */
 	fsd_detaching = 1;
-	while ((fsdi = list_remove_head(&fsd_list)) != NULL)
+	while ((fsdi = list_remove_head(&fsd_list)) != NULL) {
 		if (fsdi->fsdi_doomed == 0) {
 			fsdi->fsdi_doomed = 1;
 
@@ -558,6 +633,7 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 			fsd_rem_thread = NULL;
 			mutex_exit(&fsd_rem_thread_lock);
 		}
+	}
 
 	while (fsd_list_count > 0)
 		cv_wait(&fsd_cv_empty, &fsd_lock);
