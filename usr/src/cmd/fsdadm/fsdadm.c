@@ -50,19 +50,18 @@ info()
 		return;
 	}
 
-	if (info.fsdinf_enabled) {
-		(void) printf(
-		    "Enabled: yes\n"
-		    "Filesystems disturbed: %d\n", (int)info.fsdinf_count);
+	(void) printf(
+	    "Enabled: %s\n"
+	    "Filesystems disturbed: %d\n",
+	    (info.fsdinf_enabled ? "yes" : "no"), (int)info.fsdinf_count);
 
-		if (info.fsdinf_omni_on) {
-			(void) printf(
-			    "Omnipresent disturbing: yes\n"
-			    "Omnipresent params:\n");
-			print_fsd(&info.fsdinf_omni_param);
-		} else {
-			(void) printf("Omnipresent disturbing: no\n");
-		}
+	if (info.fsdinf_omni_on) {
+		(void) printf(
+		    "Omnipresent disturbing: yes\n"
+		    "Omnipresent params:\n");
+		print_fsd(&info.fsdinf_omni_param);
+	} else {
+		(void) printf("Omnipresent disturbing: no\n");
 	}
 }
 
@@ -234,7 +233,7 @@ main(int argc, char *argv[])
 
 	} else if (lflag) {	/* add other disturbances here */
 		if (!(cflag && rflag)) {
-			(void) fprintf(stderr, "Need chance and range.");
+			(void) fprintf(stderr, "Need chance and range.\n");
 			goto end;
 		}
 
@@ -253,7 +252,7 @@ main(int argc, char *argv[])
 		} else {
 			(void) fprintf(stderr,
 			    "Don't know what to disturb. "
-			    "Use -o or -m PATH with this options.");
+			    "Use -o or -m PATH with this options.\n");
 		}
 
 	} else {

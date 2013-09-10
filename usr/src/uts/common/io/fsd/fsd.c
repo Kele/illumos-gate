@@ -84,6 +84,7 @@
  *	Get's fsd_t associated with a given filesystem. ioc is fsdioc_mnt when
  *	passed to ioctl(). fsdioc_param is the output.
  *	Errors:
+ *		EBADFD - cannot open the file descriptor
  *		ENOENT - the filesystem is not being disturbed
  *
  * FSD_DISTURB:
@@ -433,7 +434,7 @@ fsd_mount_callback(vfs_t *vfsp, void *arg)
 	int error = 0;
 
 	mutex_enter(&fsd_lock);
-	if (!fsd_detaching && fsd_omni_param != NULL)
+	if (fsd_enabled && !fsd_detaching && fsd_omni_param != NULL)
 		error = fsd_disturber_install(vfsp, fsd_omni_param);
 	mutex_exit(&fsd_lock);
 
@@ -933,7 +934,8 @@ fsd_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
 	enabled = fsd_enabled;
 	mutex_exit(&fsd_lock);
 
-	if (!enabled && cmd != FSD_ENABLE) {
+	if (!enabled && (cmd == FSD_DISABLE || cmd == FSD_DISTURB ||
+	    cmd == FSD_DISTURB_OMNI)) {
 		*rvalp = ENOTACTIVE;
 		return (0);
 	}
