@@ -192,6 +192,8 @@ fsht_hook_remove(vfs_t *vfsp, int64_t arg)
 		return (ENOENT);
 	}
 
+	fshti->fshti_doomed = 1;
+
 	mutex_enter(&fsht_owner_lock);
 	fsht_owner = curthread;
 	mutex_exit(&fsht_owner_lock);
@@ -314,6 +316,9 @@ fsht_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 
 	cv_init(&fsht_hooks_empty, NULL, CV_DRIVER, NULL);
 
+	/* DEBUG ONLY */
+	ASSERT(fsht_detaching == 0);
+
 	return (DDI_SUCCESS);
 }
 
@@ -364,13 +369,11 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		if (fshti->fshti_doomed)
 			continue;
 
-		fshti->fshti_doomed = 1;
-
 		mutex_enter(&fsht_owner_lock);
 		fsht_owner = curthread;
 		mutex_exit(&fsht_owner_lock);
 
-		ASSERT(fsh_hook_remove(fshti->fshti_handle) == 0);
+		(void) fsh_hook_remove(fshti->fshti_handle);
 
 		mutex_enter(&fsht_owner_lock);
 		fsht_owner = NULL;
@@ -392,8 +395,11 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	mutex_destroy(&fsht_owner_lock);
 
 	cv_destroy(&fsht_hooks_empty);
-
+	
+	ASSERT(list_is_empty(&fsht_hooks));
 	list_destroy(&fsht_hooks);
+
+	ASSERT(list_is_empty(&fsht_cbs));
 	list_destroy(&fsht_cbs);
 
 	return (DDI_SUCCESS);
