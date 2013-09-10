@@ -538,6 +538,12 @@ fsd_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	fsd_devi = dip;
 	ddi_report_dev(fsd_devi);
 
+	fsd_rem_thread = NULL;
+	fsd_enabled = 0;
+	fsd_detaching = 0;
+	fsd_list_count = 0;
+	fsd_omni_param = NULL;
+
 	list_create(&fsd_list, sizeof (fsd_int_t),
 	    offsetof(fsd_int_t, fsdi_node));
 
