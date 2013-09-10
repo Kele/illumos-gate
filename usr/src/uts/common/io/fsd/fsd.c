@@ -433,7 +433,7 @@ fsd_mount_callback(vfs_t *vfsp, void *arg)
 	int error = 0;
 
 	mutex_enter(&fsd_lock);
-	if (fsd_omni_param != NULL)
+	if (!fsd_detaching && fsd_omni_param != NULL)
 		error = fsd_disturber_install(vfsp, fsd_omni_param);
 	mutex_exit(&fsd_lock);
 
