@@ -69,40 +69,70 @@ static kthread_t *fsht_owner;
 
 
 /* Dummy hooks */
-static int
-fsht_hook_read(fsh_int_t *fshi, void *arg, vnode_t *vp, uio_t *uiop, int ioflag,
-    cred_t *cr, caller_context_t *ct)
+/*ARGSUSED*/
+void
+fsht_pre_read(void *arg1, void **arg2, vnode_t **arg3, uio_t **arg4, int *arg5,
+	cred_t **arg6, caller_context_t **arg7)
 {
-	_NOTE(ARGUNUSED(arg));
-	return (fsh_next_read(fshi, vp, uiop, ioflag, cr, ct));
 }
 
-static int
-fsht_hook_write(fsh_int_t *fshi, void *arg, vnode_t *vp, uio_t *uiop,
-    int ioflag, cred_t *cr, caller_context_t *ct)
+/*ARGSUSED*/
+int
+fsht_post_read(int ret, void *arg1, void *arg2, vnode_t *arg3, uio_t *arg4,
+	int arg5, cred_t *arg6, caller_context_t *arg7)
 {
-	_NOTE(ARGUNUSED(arg));
-	return (fsh_next_write(fshi, vp, uiop, ioflag, cr, ct));
+	return (ret);
 }
 
-static int
-fsht_hook_mount(fsh_int_t *fshi, void *arg, vfs_t *vfsp, vnode_t *mvp,
-    struct mounta *uap, cred_t *cr)
+/*ARGSUSED*/
+void
+fsht_pre_write(void *arg1, void **arg2, vnode_t **arg3, uio_t **arg4, int *arg5,
+	cred_t **arg6, caller_context_t **arg7)
 {
-	_NOTE(ARGUNUSED(arg));
-	return (fsh_next_mount(fshi, vfsp, mvp, uap, cr));
 }
 
-static int
-fsht_hook_unmount(fsh_int_t *fshi, void *arg, vfs_t *vfsp, int flag, cred_t *cr)
+/*ARGSUSED*/
+int
+fsht_post_write(int ret, void *arg1, void *arg2, vnode_t *arg3, uio_t *arg4,
+	int arg5, cred_t *arg6, caller_context_t *arg7)
 {
-	_NOTE(ARGUNUSED(arg));
-	return (fsh_next_unmount(fshi, vfsp, flag, cr));
+	return (ret);
+}
+
+/* vfs */
+/*ARGSUSED*/
+void
+fsht_pre_mount(void *arg1, void **arg2, vfs_t **arg3, vnode_t **arg4,
+	struct mounta **arg5, cred_t **arg6)
+{
+}
+
+/*ARGSUSED*/
+int
+fsht_post_mount(int ret, void *arg1, void *arg2, vfs_t *arg3, vnode_t *arg4,
+	struct mounta *arg5, cred_t *arg6)
+{
+	return (ret);
+}
+
+/*ARGSUSED*/
+void
+fsht_pre_unmount(void *arg1, void **arg2, vfs_t **arg3, int *arg4,
+	cred_t **arg5)
+{
+}
+
+/*ARGSUSED*/
+int
+fsht_post_unmount(int ret, void *arg1, void *arg2, vfs_t *arg3, int arg4,
+	cred_t *arg5)
+{
+	return (ret);
 }
 
 /* Hook remove callback */
 static void
-fsht_hook_rem_cb(void *arg, fsh_handle_t handle)
+fsht_remove_cb(void *arg, fsh_handle_t handle)
 {
 	_NOTE(ARGUNUSED(handle));
 
@@ -154,11 +184,18 @@ fsht_hook_install(vfs_t *vfsp, int64_t arg)
 	fshti->fshti_arg = arg;
 
 	hook.arg = fshti;
-	hook.read = fsht_hook_read;
-	hook.write = fsht_hook_write;
-	hook.mount = fsht_hook_mount;
-	hook.unmount = fsht_hook_unmount;
-	hook.remove_cb = fsht_hook_rem_cb;
+
+	hook.pre_read = fsht_pre_read;
+	hook.pre_write = fsht_pre_write;
+	hook.pre_mount = fsht_pre_mount;
+	hook.pre_unmount = fsht_pre_unmount;
+
+	hook.post_read = fsht_post_read;
+	hook.post_write = fsht_post_write;
+	hook.post_mount = fsht_post_mount;
+	hook.post_unmount = fsht_post_unmount;
+
+	hook.remove_cb = fsht_remove_cb;
 
 	fshti->fshti_handle = fsh_hook_install(vfsp, &hook);
 	if (fshti->fshti_handle == -1) {
@@ -225,7 +262,7 @@ fsht_cb_free(vfs_t *vfsp, void *arg)
 }
 
 static int
-fsht_install_cb(int64_t arg)
+fsht_callback_install(int64_t arg)
 {
 	fsh_callback_t callback = { 0 };
 	fsht_cb_int_t *fshtcbi;
@@ -262,7 +299,7 @@ fsht_install_cb(int64_t arg)
 }
 
 static int
-fsht_remove_cb(int64_t arg)
+fsht_callback_remove(int64_t arg)
 {
 	fsht_cb_int_t *fshtcbi;
 
@@ -306,6 +343,11 @@ fsht_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	fsht_devi = dip;
 	ddi_report_dev(fsht_devi);
 
+	fsht_detaching = 0;
+	fsht_enabled = 0;
+	fsht_hooks_count = 0;
+	fsht_owner = NULL;
+
 	mutex_init(&fsht_lock, NULL, MUTEX_DRIVER, NULL);
 	mutex_init(&fsht_owner_lock, NULL, MUTEX_DRIVER, NULL);
 
@@ -315,9 +357,6 @@ fsht_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	    offsetof(fsht_cb_int_t, fshtcbi_next));
 
 	cv_init(&fsht_hooks_empty, NULL, CV_DRIVER, NULL);
-
-	/* DEBUG ONLY */
-	ASSERT(fsht_detaching == 0);
 
 	return (DDI_SUCCESS);
 }
@@ -358,7 +397,7 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	 *	    continue;
 	 *	fsh_hook_remove(fshti->fshti_handle);
 	 * }
-	 * It is possible, that inside fsh_hook_remove(), fsht_hook_rem_cb()
+	 * It is possible, that inside fsh_hook_remove(), fsht_remove_cb()
 	 * would be fired. If that happens, after fsh_hook_remove() returns,
 	 * fshti would be invalid and thus the iterating step in our loop would
 	 * fail.
@@ -382,7 +421,7 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 
 	/*
 	 * fsh does not guarantee that after fsh_hook_remove(), threads won't be
-	 * executing our hooks. We have to wait for fsht_hook_rem_cb().
+	 * executing our hooks. We have to wait for fsht_remove_cb().
 	 */
 	while (fsht_hooks_count > 0)
 		cv_wait(&fsht_hooks_empty, &fsht_lock);
@@ -524,7 +563,7 @@ fsht_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
 		if (ddi_copyin((void *)arg, &io, sizeof (io), mode))
 			return (EFAULT);
 
-		*rvalp = fsht_install_cb(io.fshtcio_arg);
+		*rvalp = fsht_callback_install(io.fshtcio_arg);
 		return (0);
 	}
 
@@ -533,7 +572,7 @@ fsht_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
 
 		if (ddi_copyin((void *)arg, &io, sizeof (io), mode))
 			return (EFAULT);
-		*rvalp = fsht_remove_cb(io.fshtcio_arg);
+		*rvalp = fsht_callback_remove(io.fshtcio_arg);
 		return (0);
 	}
 
