@@ -35,20 +35,20 @@ fsht_close(int fd)
 	(void) close(fd);
 }
 
-int 
+int
 fsht_enable(int fd)
 {
 	return (ioctl(fd, FSHT_ENABLE));
 }
 
-int 
+int
 fsht_disable(int fd)
 {
 	return (ioctl(fd, FSHT_DISABLE));
 }
 
 
-int 
+int
 fsht_install_hook(int fd, char *mnt, int arg)
 {
 	fsht_hook_ioc_t ioc;
@@ -66,7 +66,7 @@ fsht_install_hook(int fd, char *mnt, int arg)
 	return (ret);
 }
 
-int 
+int
 fsht_remove_hook(int fd, char *mnt, int arg)
 {
 	fsht_hook_ioc_t ioc;
@@ -85,7 +85,7 @@ fsht_remove_hook(int fd, char *mnt, int arg)
 }
 
 
-int 
+int
 fsht_install_callback(int fd, int arg)
 {
 	fsht_cb_ioc_t ioc;
@@ -94,7 +94,7 @@ fsht_install_callback(int fd, int arg)
 	return (ioctl(fd, FSHT_CB_INSTALL, &ioc));
 }
 
-int 
+int
 fsht_remove_callback(int fd, int arg)
 {
 	fsht_cb_ioc_t ioc;
@@ -147,8 +147,7 @@ linsert_head(hook_list_t *list, int val)
 void
 lremove(hook_list_t *list, hook_t *node)
 {
-	if (list->head == node)
-	{
+	if (list->head == node) {
 		list->head = list->head->next;
 		if (list->head != NULL)
 			list->head->prev = NULL;

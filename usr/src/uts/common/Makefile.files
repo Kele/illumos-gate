@@ -936,6 +936,8 @@ PMCS8001FW_OBJS +=		$(PMCS8001FW_C_OBJS) SPCBoot.o ila.o firmware.o
 
 FSD_OBJS +=	fsd.o
 
+FSHTEST_OBJS +=	fshtest.o
+
 #
 #	Build up defines and paths.
 

@@ -39,7 +39,7 @@ static char paths[MAX_FILES][MAXPATHLEN];
 static int paths_count;
 static char *mntpath;
 
-#define MAX_ARGS 1000000
+#define	MAX_ARGS 1000000
 #define	MAX_ITERATIONS MAX_ARGS
 
 static int drv_fd;
@@ -54,7 +54,7 @@ install_random_hook()
 
 	if (lcount(&free_hooks) == 0)
 		return;
-	
+
 	pos = rand() % lcount(&free_hooks);
 	elem = lhead(&free_hooks);
 	while (pos--)
@@ -64,7 +64,7 @@ install_random_hook()
 	lremove(&free_hooks, elem);
 	linsert_head(&installed_hooks, val);
 
-	if (fsht_install_hook(drv_fd, mntpath, val) == -1) 
+	if (fsht_install_hook(drv_fd, mntpath, val) == -1)
 		perror("fsh_install_hook: ");
 }
 
@@ -76,7 +76,7 @@ remove_random_hook()
 
 	if (lcount(&installed_hooks) == 0)
 		return;
-	
+
 	pos = rand() % lcount(&installed_hooks);
 	elem = lhead(&installed_hooks);
 	while (pos--)
@@ -115,7 +115,7 @@ run_test(int iterations)
 		usleep(1000);
 		switch (op = rand() % 4) {
 		case 0:
-			install_random_hook();	
+			install_random_hook();
 			break;
 
 		case 1:
@@ -123,7 +123,7 @@ run_test(int iterations)
 			break;
 
 		case 2:
-		case 3: {	
+		case 3: {
 			/* read, write */
 
 			char buf[100];
@@ -182,7 +182,7 @@ main(int argc, char *argv[])
 	tests = atoi(argv[1]);
 	iterations = atoi(argv[2]);
 	if (iterations > MAX_ITERATIONS) {
-		(void) fprintf(stderr, 
+		(void) fprintf(stderr,
 		    "Maximum number of iterations is set to 10000\n");
 		return (-1);
 	}
@@ -196,18 +196,18 @@ main(int argc, char *argv[])
 	index = 0;
 	while (fgets(paths[index], MAXPATHLEN, files_fd) != NULL) {
 		paths[index][strlen(paths[index]) - 1] = '\0';
-		index++;	
+		index++;
 		if (index >= MAX_FILES) {
 			(void) fprintf(stderr, "Error: Too many files. "
-			   "The limit is set to less than %d.\n",
-			   MAX_FILES);
+			    "The limit is set to less than %d.\n",
+			    MAX_FILES);
 			(void) fclose(files_fd);
 			return (-1);
 		}
 	}
 	paths_count = index;
 	(void) fclose(files_fd);
-	
+
 
 
 	/* Run tests */

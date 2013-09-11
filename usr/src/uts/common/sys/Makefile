@@ -244,6 +244,7 @@ CHKHDRS=			\
 	fsd.h			\
 	fsh.h			\
 	fsh_impl.h		\
+	fshtest.h		\
 	fss.h			\
 	fsspriocntl.h		\
 	fsid.h			\

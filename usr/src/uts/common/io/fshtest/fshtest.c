@@ -395,7 +395,7 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	mutex_destroy(&fsht_owner_lock);
 
 	cv_destroy(&fsht_hooks_empty);
-	
+
 	ASSERT(list_is_empty(&fsht_hooks));
 	list_destroy(&fsht_hooks);
 
