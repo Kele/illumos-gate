@@ -95,7 +95,7 @@ print_hooks(const char *func)
 {
 	hook_t *elem = lhead(&installed_hooks);
 	while (elem != NULL) {
-		(void) printf("fsht_hook_pre_%s %d\n", func, elem->val);
+		(void) printf("fsht_pre_%s %d\n", func, elem->val);
 		elem = lnext(elem);
 	}
 }
