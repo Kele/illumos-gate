@@ -159,7 +159,8 @@ SUBDIRS += \
 	librdc		\
 	libinstzones	\
 	libpkg		\
-	libpcidb
+	libpcidb	\
+	libfsd
 
 SUBDIRS += \
 	passwdutil	\
@@ -508,6 +509,7 @@ HDRSUBDIRS=		\
 	libsun_ima	\
 	mpapi		\
 	libreparse	\
+	libfsd		\
 	$($(MACH)_HDRSUBDIRS)
 
 $(CLOSED_BUILD)HDRSUBDIRS += \

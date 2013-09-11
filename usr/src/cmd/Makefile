@@ -169,6 +169,7 @@ COMMON_SUBDIRS=		\
 	format		\
 	fs.d		\
 	fshtest		\
+	fsdadm		\
 	fstyp		\
 	fuser		\
 	fwflash		\

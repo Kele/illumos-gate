@@ -84,6 +84,8 @@
 #include <sys/spa.h>
 #include <sys/lofi.h>
 #include <sys/bootprops.h>
+#include <sys/fsh.h>
+#include <sys/fsh_impl.h>
 
 #include <vm/page.h>
 
@@ -216,13 +218,13 @@ const mntopts_t vfs_mntopts = {
 int
 fsop_mount(vfs_t *vfsp, vnode_t *mvp, struct mounta *uap, cred_t *cr)
 {
-	return (*(vfsp)->vfs_op->vfs_mount)(vfsp, mvp, uap, cr);
+	return (fsh_mount(vfsp, mvp, uap, cr));
 }
 
 int
 fsop_unmount(vfs_t *vfsp, int flag, cred_t *cr)
 {
-	return (*(vfsp)->vfs_op->vfs_unmount)(vfsp, flag, cr);
+	return (fsh_unmount(vfsp, flag, cr));
 }
 
 int
@@ -1785,6 +1787,7 @@ domount(char *fsname, struct mounta *uap, vnode_t *vp, struct cred *credp,
 		}
 		/* Return vfsp to caller. */
 		*vfspp = vfsp;
+		fsh_exec_mount_callbacks(vfsp);
 	}
 errout:
 	vfs_freeopttbl(&mnt_mntopts);
@@ -4235,6 +4238,9 @@ vfsinit(void)
 	/* Setup event monitor framework */
 	fem_init();
 
+	/* Setup filesystem hook framework */
+	fsh_init();
+
 	/* Initialize the dummy stray file system type. */
 	error = vfs_setfsops(0, stray_vfsops_template, NULL);
 
@@ -4319,6 +4325,15 @@ vfs_free(vfs_t *vfsp)
 		vfsp->vfs_femhead = NULL;
 	}
 
+	/*
+	 * fsh cleanup
+	 * There's no need here to use atomic operations on vfs_fshrecord.
+	 */
+	if (vfsp->vfs_fshrecord != NULL) {
+		fsh_fsrec_destroy(vfsp->vfs_fshrecord);
+		vfsp->vfs_fshrecord = NULL;
+	}
+
 	if (vfsp->vfs_implp)
 		vfsimpl_teardown(vfsp);
 	sema_destroy(&vfsp->vfs_reflock);
@@ -4345,6 +4360,7 @@ vfs_rele(vfs_t *vfsp)
 {
 	ASSERT(vfsp->vfs_count != 0);
 	if (atomic_add_32_nv(&vfsp->vfs_count, -1) == 0) {
+		fsh_exec_free_callbacks(vfsp);
 		VFS_FREEVFS(vfsp);
 		lofi_remove(vfsp);
 		if (vfsp->vfs_zone)
