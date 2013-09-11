@@ -112,7 +112,7 @@ run_test(int iterations)
 
 
 	for (i = 0; i < iterations; i++) {
-		usleep(1000);
+		(void) usleep(1000);
 		switch (op = rand() % 4) {
 		case 0:
 			install_random_hook();
