@@ -14,35 +14,6 @@
 #
 
 PROG = fshtestadm
-OBJS = fshtestadm.o
-SRCS = $(OBJS:%.o=%.c)
+OBJS = fshtestadm.o ../common/common.o
 
-FILEMODE = 0555
-
-include ../Makefile.cmd
-include	../Makefile.ctf
-
-CLEANFILES += $(OBJS)
-
-CFLAGS += $(CCVERBOSE)
-CFLAG64 += $(CCVERBOSE)
-
-all: $(PROG)
-
-$(PROG): $(OBJS)
-	$(LINK.c) -o $@ $(OBJS) $(LDLIBS)
-	$(POST_PROCESS)
-
-%.o: %.c
-	$(COMPILE.c) $<
-	$(POST_PROCESS_O)
-
-clean:
-	-$(RM) $(CLEANFILES)
-
-lint: lint_PROG
-
-install: all $(ROOTUSRSBINPROG)
-
-include ../Makefile.targ
-
+include ../common/Makefile.com

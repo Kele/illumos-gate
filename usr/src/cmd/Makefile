@@ -168,7 +168,7 @@ COMMON_SUBDIRS=		\
 	fold		\
 	format		\
 	fs.d		\
-	fshtestadm	\
+	fshtest		\
 	fstyp		\
 	fuser		\
 	fwflash		\
