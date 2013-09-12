@@ -19,8 +19,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "common.h"
+
+extern int errno;
 
 int
 fsht_open()
@@ -48,141 +51,48 @@ fsht_disable(int fd)
 }
 
 
-int
-fsht_install_hook(int fd, char *mnt, int arg)
+int64_t
+fsht_hook_install(int fd, char *mnt, int type, int arg)
 {
 	fsht_hook_ioc_t ioc;
-	int mntfd, ret;
+	int mntfd;
+	int64_t ret = 0;
 
-	ioc.fshthio_arg = arg;
-	mntfd = open(mnt, O_RDONLY);
-	if (mntfd == -1)
-		return (-1);
+	ioc.install.fshthio_type = type;
 
-	ioc.fshthio_fd = mntfd;
-	ret = (ioctl(fd, FSHT_HOOKS_INSTALL, &ioc));
+	switch (type) {
+	case FSHTT_DUMMY:
+		ioc.install.fshthio_arg = arg;
+		/*FALLTHROUGH*/
+	case FSHTT_PREPOST:
+		/*FALL THROUGH*/
+	case FSHTT_API:
+		/*FALL THROUGH*/
+	case FSHTT_AFTER_REMOVE:
+		/*FALL THROUGH*/
+	case FSHTT_SELF_DESTROY:
+		if ((mntfd = open(mnt, O_RDONLY)) == -1)
+			return (-2);
+		ioc.install.fshthio_fd = mntfd;	
 
-	(void) close(mntfd);
+		ioc.install.fshthio_type = type;
+		ret = ioctl(fd, FSHT_HOOK_INSTALL, &ioc);
+		ret = ioc.out.fshthio_handle;
+		(void) close(mntfd);
+		break;
+
+	default:
+		ret = -3;
+		break;
+	}
+
 	return (ret);
 }
 
 int
-fsht_remove_hook(int fd, char *mnt, int arg)
+fsht_hook_remove(int fd, int64_t handle)
 {
 	fsht_hook_ioc_t ioc;
-	int mntfd, ret;
-
-	ioc.fshthio_arg = arg;
-	mntfd = open(mnt, O_RDONLY);
-	if (mntfd == -1)
-		return (-1);
-
-	ioc.fshthio_fd = mntfd;
-	ret = (ioctl(fd, FSHT_HOOKS_REMOVE, &ioc));
-
-	(void) close(mntfd);
-	return (ret);
-}
-
-
-int
-fsht_install_callback(int fd, int arg)
-{
-	fsht_cb_ioc_t ioc;
-
-	ioc.fshtcio_arg = arg;
-	return (ioctl(fd, FSHT_CB_INSTALL, &ioc));
-}
-
-int
-fsht_remove_callback(int fd, int arg)
-{
-	fsht_cb_ioc_t ioc;
-
-	ioc.fshtcio_arg = arg;
-	return (ioctl(fd, FSHT_CB_REMOVE, &ioc));
-}
-
-/* hooks */
-void
-linit(hook_list_t *list)
-{
-	list->count = 0;
-	list->head = NULL;
-}
-
-hook_t *
-lhead(hook_list_t *list)
-{
-	return (list->head);
-}
-
-hook_t *
-lnext(hook_t *node)
-{
-	return (node->next);
-}
-
-hook_t *
-lprev(hook_t *node)
-{
-	return (node->prev);
-}
-
-void
-linsert_head(hook_list_t *list, int val)
-{
-	hook_t *node = malloc(sizeof (hook_t));
-
-	node->val = val;
-	node->prev = NULL;
-	node->next = list->head;
-
-	if (list->head)
-		list->head->prev = node;
-	list->head = node;
-	list->count++;
-}
-
-void
-lremove(hook_list_t *list, hook_t *node)
-{
-	if (list->head == node) {
-		list->head = list->head->next;
-		if (list->head != NULL)
-			list->head->prev = NULL;
-	} else {
-		node->prev->next = node->next;
-		if (node->next != NULL)
-			node->next->prev = node->prev;
-	}
-	list->count--;
-	free(node);
-}
-
-void
-lremove_head(hook_list_t *list)
-{
-	hook_t *node = list->head;
-
-	if (list->head) {
-		list->head = list->head->next;
-		if (list->head)
-			list->head->prev = NULL;
-		list->count--;
-	}
-	free(node);
-}
-
-int
-lcount(hook_list_t *list)
-{
-	return (list->count);
-}
-
-void
-lclear(hook_list_t *list)
-{
-	while (list->head != NULL)
-		lremove_head(list);
+	ioc.remove.fshthio_handle = handle;
+	return (ioctl(fd, FSHT_HOOK_REMOVE, &ioc));
 }

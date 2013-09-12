@@ -21,6 +21,7 @@
 #include <sys/ddi.h>
 #include <sys/file.h>
 #include <sys/fsh.h>
+#include <sys/fsh_impl.h>
 #include <sys/fshtest.h>
 #include <sys/kmem.h>
 #include <sys/ksynch.h>
@@ -31,11 +32,21 @@
 #include <sys/sunddi.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <sys/vfs.h>
+
+#define	FSHT_MAGIC	(0xB06E1)
+
+typedef struct fsht_arg {
+	fsh_handle_t handle;
+	int magic1;
+	int magic2;
+	int op;
+} fsht_arg_t;
 
 typedef struct fsht_int {
 	fsh_handle_t	fshti_handle;
 	int		fshti_doomed;
-	int64_t		fshti_arg;
+	fsht_arg_t	fshti_arg;
 	vfs_t		*fshti_vfsp;
 	list_node_t	fshti_next;
 } fsht_int_t;
@@ -49,139 +60,318 @@ typedef struct fsht_cb_int {
 static dev_info_t *fsht_devi;
 
 /*
- * fsht_lock protects: fsht_detaching, fsht_hooks, fsht_cbs, fsht_hooks_count,
- * fsht_hooks_empty.
+ * fsht_lock protects: fsht_detaching, fsht_hooks_count, fsht_hooks_empty,
+ * fsht_enabled
  */
 static kmutex_t fsht_lock;
-
-static list_t fsht_hooks;	/* list of fsht_int_t */
-static list_t fsht_cbs;		/* list of fsht_cb_int_t */
 
 static int fsht_hooks_count;
 static kcondvar_t fsht_hooks_empty;
 
 static int fsht_enabled;
 
-static int fsht_detaching;
-
-static kmutex_t fsht_owner_lock;
-static kthread_t *fsht_owner;
-
-
-/* Dummy hooks */
-/*ARGSUSED*/
-void
-fsht_pre_read(void *arg1, void **arg2, vnode_t **arg3, uio_t **arg4, int *arg5,
-	cred_t **arg6, caller_context_t **arg7)
+/* Testing hooks */
+static void
+pre_hook(void *arg1, void **instancepp)
 {
+	fsht_arg_t *arg = arg1;
+
+	switch (arg->op) {
+	case FSHTT_DUMMY:
+		break;
+
+	case FSHTT_PREPOST:
+		*instancepp = kmem_alloc(sizeof (int), KM_SLEEP);
+		/* Verified in post hook */
+		*(int *)*instancepp = arg->magic1;
+
+		/* Added 1 in post hook, verified in remove callback */
+		arg->magic2 = arg->magic1;
+		break;
+
+	case FSHTT_API: {
+		fsh_handle_t handle;
+		fsh_t hook = { 0 };
+		fsh_callback_handle_t cb_handle;
+		fsh_callback_t cb = { 0 };
+		vfs_t *vfsp;
+
+		vfsp = vfs_alloc(KM_SLEEP);
+
+		if ((handle = fsh_hook_install(vfsp, &hook)) != -1)
+			VERIFY(fsh_hook_remove(handle) == 0);
+
+		if ((cb_handle = fsh_callback_install(&cb)) != -1)
+			VERIFY(fsh_callback_remove(cb_handle) == 0);
+
+		fsh_exec_mount_callbacks(vfsp);
+		fsh_exec_free_callbacks(vfsp);
+
+		fsh_fs_enable(vfsp);
+		fsh_fs_disable(vfsp);
+
+		/*
+		 * fsh_fsrec_destroy() is called inside vfs_free()
+		 */
+		vfs_free(vfsp);
+
+		break;
+	}
+
+	case FSHTT_AFTER_REMOVE:
+		/*
+		 * Set before installing.
+		 * Remove callback sets magic2 to some sentinel value.
+		 */
+		VERIFY(arg->magic2 == arg->magic1);
+		break;
+
+	case FSHTT_SELF_DESTROY:
+		(void) fsh_hook_remove(arg->handle);
+
+		/* Post adds 1, remove callback verifies */
+		arg->magic2 = arg->magic1;
+		break;
+
+	default:
+		break;
+	}
+
+
+}
+
+static void
+post_hook(void *arg1, void *instancep)
+{
+	fsht_arg_t *arg = arg1;
+
+	switch (arg->op) {
+	case FSHTT_DUMMY:
+		break;
+
+	case FSHTT_PREPOST:
+		VERIFY(*(int *)instancep == arg->magic1);
+		kmem_free(instancep, sizeof (int));
+
+		VERIFY(arg->magic2 == arg->magic1);
+
+		/* Verified to be 2 in remove callback */
+		arg->magic2++;
+		break;
+
+	case FSHTT_API: {
+		fsh_handle_t handle;
+		fsh_t hook = { 0 };
+		fsh_callback_handle_t cb_handle;
+		fsh_callback_t cb = { 0 };
+		vfs_t *vfsp;
+
+		vfsp = vfs_alloc(KM_SLEEP);
+
+		if ((handle = fsh_hook_install(vfsp, &hook)) != -1)
+			VERIFY(fsh_hook_remove(handle) == 0);
+
+		if ((cb_handle = fsh_callback_install(&cb)) != -1)
+			VERIFY(fsh_callback_remove(cb_handle) == 0);
+
+		fsh_exec_mount_callbacks(vfsp);
+		fsh_exec_free_callbacks(vfsp);
+
+		fsh_fs_enable(vfsp);
+		fsh_fs_disable(vfsp);
+
+		/*
+		 * fsh_fsrec_destroy() is called inside vfs_free()
+		 */
+		vfs_free(vfsp);
+
+		break;
+	}
+
+	case FSHTT_AFTER_REMOVE:
+		/*
+		 * Set before installing.
+		 * Remove callback sets magic2 to some sentinel value.
+		 */
+		VERIFY(arg->magic2 == arg->magic1);
+		break;
+
+	case FSHTT_SELF_DESTROY:
+		/* Remove callback sets magic2 to some sentinel value. */
+		VERIFY(arg->magic2 == arg->magic1);
+		/* Remove callback verifies */
+		arg->magic2++;
+		break;
+
+	default:
+		break;
+	}
 }
 
 /*ARGSUSED*/
-int
+static void
+fsht_pre_read(void *arg1, void **arg2, vnode_t **arg3, uio_t **arg4, int *arg5,
+	cred_t **arg6, caller_context_t **arg7)
+{
+	pre_hook(arg1, arg2);
+}
+
+/*ARGSUSED*/
+static int
 fsht_post_read(int ret, void *arg1, void *arg2, vnode_t *arg3, uio_t *arg4,
 	int arg5, cred_t *arg6, caller_context_t *arg7)
 {
+	post_hook(arg1, arg2);
 	return (ret);
 }
 
 /*ARGSUSED*/
-void
+static void
 fsht_pre_write(void *arg1, void **arg2, vnode_t **arg3, uio_t **arg4, int *arg5,
 	cred_t **arg6, caller_context_t **arg7)
 {
+	pre_hook(arg1, arg2);
 }
 
 /*ARGSUSED*/
-int
+static int
 fsht_post_write(int ret, void *arg1, void *arg2, vnode_t *arg3, uio_t *arg4,
 	int arg5, cred_t *arg6, caller_context_t *arg7)
 {
+	post_hook(arg1, arg2);
 	return (ret);
 }
 
 /* vfs */
 /*ARGSUSED*/
-void
+static void
 fsht_pre_mount(void *arg1, void **arg2, vfs_t **arg3, vnode_t **arg4,
 	struct mounta **arg5, cred_t **arg6)
 {
+	pre_hook(arg1, arg2);
 }
 
 /*ARGSUSED*/
-int
+static int
 fsht_post_mount(int ret, void *arg1, void *arg2, vfs_t *arg3, vnode_t *arg4,
 	struct mounta *arg5, cred_t *arg6)
 {
+	post_hook(arg1, arg2);
 	return (ret);
 }
 
 /*ARGSUSED*/
-void
+static void
 fsht_pre_unmount(void *arg1, void **arg2, vfs_t **arg3, int *arg4,
 	cred_t **arg5)
 {
+	pre_hook(arg1, arg2);
 }
 
 /*ARGSUSED*/
-int
+static int
 fsht_post_unmount(int ret, void *arg1, void *arg2, vfs_t *arg3, int arg4,
 	cred_t *arg5)
 {
+	post_hook(arg1, arg2);
 	return (ret);
 }
 
+
 /* Hook remove callback */
 static void
-fsht_remove_cb(void *arg, fsh_handle_t handle)
+fsht_remove_cb(void *arg1, fsh_handle_t handle)
 {
 	_NOTE(ARGUNUSED(handle));
 
-	int fsht_context;
-	fsht_int_t *fshti = (fsht_int_t *)arg;
+	fsht_int_t *fshti = (fsht_int_t *)arg1;
+	fsht_arg_t *arg = &fshti->fshti_arg;
 
-	mutex_enter(&fsht_owner_lock);
-	fsht_context = fsht_owner == curthread;
-	mutex_exit(&fsht_owner_lock);
+	switch (arg->op) {
+	case FSHTT_DUMMY:
+		break;
 
-	if (!fsht_context)
-		mutex_enter(&fsht_lock);
+	case FSHTT_PREPOST:
+		VERIFY(arg->magic2 == arg->magic1 + 1);
+		break;
 
-	ASSERT(MUTEX_HELD(&fsht_lock));
+	case FSHTT_API: {
+		fsh_handle_t handle;
+		fsh_t hook = { 0 };
+		fsh_callback_handle_t cb_handle;
+		fsh_callback_t cb = { 0 };
+		vfs_t *vfsp;
 
-	if (!fsht_detaching)
-		list_remove(&fsht_hooks, fshti);
+		vfsp = vfs_alloc(KM_SLEEP);
+
+		if ((handle = fsh_hook_install(vfsp, &hook)) != -1)
+			VERIFY(fsh_hook_remove(handle) == 0);
+
+		if ((cb_handle = fsh_callback_install(&cb)) != -1)
+			VERIFY(fsh_callback_remove(cb_handle) == 0);
+
+		fsh_exec_mount_callbacks(vfsp);
+		fsh_exec_free_callbacks(vfsp);
+
+		fsh_fs_enable(vfsp);
+		fsh_fs_disable(vfsp);
+
+		/*
+		 * fsh_fsrec_destroy() is called inside vfs_free()
+		 */
+		vfs_free(vfsp);
+
+		break;
+	}
+
+	case FSHTT_AFTER_REMOVE:
+		arg->magic2 = arg->magic1 + 1;
+		break;
+
+	case FSHTT_SELF_DESTROY:
+		VERIFY(arg->magic2 == arg->magic1 + 1);
+		break;
+
+	default:
+		break;
+	}
+
 	kmem_free(fshti, sizeof (*fshti));
 
+	mutex_enter(&fsht_lock);
+	VERIFY(fsht_hooks_count > 0);
 	fsht_hooks_count--;
 	if (fsht_hooks_count == 0)
 		cv_signal(&fsht_hooks_empty);
-
-	if (!fsht_context)
-		mutex_exit(&fsht_lock);
+	mutex_exit(&fsht_lock);
 }
 
 static int
-fsht_hook_install(vfs_t *vfsp, int64_t arg)
+fsht_hook_install(vfs_t *vfsp, int type, int arg, int64_t *handle)
 {
-	fsht_int_t *fshti;
 	fsh_t hook = { 0 };
-
-	mutex_enter(&fsht_lock);
-
-	for (fshti = list_head(&fsht_hooks); fshti != NULL;
-	    fshti = list_next(&fsht_hooks, fshti)) {
-		if (fshti->fshti_vfsp == vfsp && fshti->fshti_arg == arg)
-			break;
-	}
-
-	if (fshti != NULL) {
-		mutex_exit(&fsht_lock);
-		return (EEXIST);
-	}
+	fsht_int_t *fshti;
 
 	fshti = kmem_zalloc(sizeof (*fshti), KM_SLEEP);
 	fshti->fshti_vfsp = vfsp;
-	fshti->fshti_arg = arg;
+
+	switch (type) {
+	case FSHTT_DUMMY:
+		fshti->fshti_arg.magic1 = arg;
+		break;
+
+	case FSHTT_API:
+		break;
+
+	case FSHTT_PREPOST:
+	case FSHTT_SELF_DESTROY:
+	case FSHTT_AFTER_REMOVE:
+		fshti->fshti_arg.magic1 = FSHT_MAGIC;
+		break;
+
+	default:
+		return (EINVAL);
+	}
 
 	hook.arg = fshti;
 
@@ -197,131 +387,23 @@ fsht_hook_install(vfs_t *vfsp, int64_t arg)
 
 	hook.remove_cb = fsht_remove_cb;
 
-	fshti->fshti_handle = fsh_hook_install(vfsp, &hook);
+	*handle = fshti->fshti_handle = fsh_hook_install(vfsp, &hook);
 	if (fshti->fshti_handle == -1) {
 		kmem_free(fshti, sizeof (*fshti));
-		mutex_exit(&fsht_lock);
 		return (EAGAIN);
 	}
-	list_insert_head(&fsht_hooks, fshti);
+
+	mutex_enter(&fsht_lock);
 	fsht_hooks_count++;
-
 	mutex_exit(&fsht_lock);
 
 	return (0);
 }
 
 static int
-fsht_hook_remove(vfs_t *vfsp, int64_t arg)
+fsht_hook_remove(fsh_handle_t handle)
 {
-	fsht_int_t *fshti;
-
-	mutex_enter(&fsht_lock);
-
-	for (fshti = list_head(&fsht_hooks); fshti != NULL;
-	    fshti = list_next(&fsht_hooks, fshti)) {
-		if (fshti->fshti_vfsp == vfsp && fshti->fshti_arg == arg)
-			break;
-	}
-
-	if (fshti == NULL) {
-		mutex_exit(&fsht_lock);
-		return (ENOENT);
-	}
-
-	fshti->fshti_doomed = 1;
-
-	mutex_enter(&fsht_owner_lock);
-	fsht_owner = curthread;
-	mutex_exit(&fsht_owner_lock);
-
-	ASSERT(fsh_hook_remove(fshti->fshti_handle) == 0);
-
-	mutex_enter(&fsht_owner_lock);
-	fsht_owner = NULL;
-	mutex_exit(&fsht_owner_lock);
-
-	mutex_exit(&fsht_lock);
-
-	return (0);
-}
-
-/* Dummy callbacks */
-static void
-fsht_cb_mount(vfs_t *vfsp, void *arg)
-{
-	_NOTE(ARGUNUSED(vfsp));
-	_NOTE(ARGUNUSED(arg));
-}
-
-static void
-fsht_cb_free(vfs_t *vfsp, void *arg)
-{
-	_NOTE(ARGUNUSED(vfsp));
-	_NOTE(ARGUNUSED(arg));
-}
-
-static int
-fsht_callback_install(int64_t arg)
-{
-	fsh_callback_t callback = { 0 };
-	fsht_cb_int_t *fshtcbi;
-
-	mutex_enter(&fsht_lock);
-	for (fshtcbi = list_head(&fsht_cbs); fshtcbi != NULL;
-	    fshtcbi = list_next(&fsht_cbs, fshtcbi)) {
-		if (fshtcbi->fshtcbi_arg == arg)
-			break;
-	}
-	if (fshtcbi != NULL) {
-		mutex_exit(&fsht_lock);
-		return (EEXIST);
-	}
-
-	fshtcbi = kmem_zalloc(sizeof (*fshtcbi), KM_SLEEP);
-	fshtcbi->fshtcbi_arg = arg;
-
-	callback.fshc_arg = fshtcbi;
-	callback.fshc_free = fsht_cb_free;
-	callback.fshc_mount = fsht_cb_mount;
-
-	fshtcbi->fshtcbi_handle = fsh_callback_install(&callback);
-	if (fshtcbi->fshtcbi_handle) {
-		kmem_free(fshtcbi, sizeof (*fshtcbi));
-		mutex_exit(&fsht_lock);
-		return (EAGAIN);
-	}
-	list_insert_head(&fsht_cbs, fshtcbi);
-
-	mutex_exit(&fsht_lock);
-
-	return (0);
-}
-
-static int
-fsht_callback_remove(int64_t arg)
-{
-	fsht_cb_int_t *fshtcbi;
-
-	mutex_enter(&fsht_lock);
-	for (fshtcbi = list_head(&fsht_cbs); fshtcbi != NULL;
-	    fshtcbi = list_next(&fsht_cbs, fshtcbi)) {
-		if (fshtcbi->fshtcbi_arg == arg)
-			break;
-	}
-	if (fshtcbi == NULL) {
-		mutex_exit(&fsht_lock);
-		return (ENOENT);
-	}
-
-	ASSERT(fsh_callback_remove(fshtcbi->fshtcbi_handle) == 0);
-
-	list_remove(&fsht_cbs, fshtcbi);
-	kmem_free(fshtcbi, sizeof (*fshtcbi));
-
-	mutex_exit(&fsht_lock);
-
-	return (0);
+	return (fsh_hook_remove(handle) == 0 ? 0 : ENOENT);
 }
 
 /* Entry points */
@@ -343,19 +425,10 @@ fsht_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	fsht_devi = dip;
 	ddi_report_dev(fsht_devi);
 
-	fsht_detaching = 0;
 	fsht_enabled = 0;
 	fsht_hooks_count = 0;
-	fsht_owner = NULL;
 
 	mutex_init(&fsht_lock, NULL, MUTEX_DRIVER, NULL);
-	mutex_init(&fsht_owner_lock, NULL, MUTEX_DRIVER, NULL);
-
-	list_create(&fsht_hooks, sizeof (fsht_int_t),
-	    offsetof(fsht_int_t, fshti_next));
-	list_create(&fsht_cbs, sizeof (fsht_cb_int_t),
-	    offsetof(fsht_cb_int_t, fshtcbi_next));
-
 	cv_init(&fsht_hooks_empty, NULL, CV_DRIVER, NULL);
 
 	return (DDI_SUCCESS);
@@ -364,9 +437,6 @@ fsht_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 static int
 fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 {
-	fsht_int_t *fshti;
-	fsht_cb_int_t *cb;
-
 	int enabled;
 
 	if (cmd != DDI_DETACH)
@@ -379,67 +449,18 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	if (enabled)
 		return (DDI_FAILURE);
 
-	ASSERT(dip == fsht_devi);
+	VERIFY(dip == fsht_devi);
 
 	ddi_remove_minor_node(dip, NULL);
 	fsht_devi = NULL;
 
-
-	/*
-	 * After fsht_lock is acquired in fsht_detach(), there is no way to
-	 * manipulate the fsht_hooks list from other context than fsht_detach().
-	 * Because of that, we are able to walk through fsh_hooks and remove the
-	 * hooks without invalidaint our iterator.  Here is a situation where
-	 * without it, things would go wrong:
-	 * for (fshti = list_head(&fsht_hooks); fshti != NULL;
-	 *    fshti = list_next(&fsht_hooks, fshti)) {
-	 *	if (fshti->fshti_doomed)
-	 *	    continue;
-	 *	fsh_hook_remove(fshti->fshti_handle);
-	 * }
-	 * It is possible, that inside fsh_hook_remove(), fsht_remove_cb()
-	 * would be fired. If that happens, after fsh_hook_remove() returns,
-	 * fshti would be invalid and thus the iterating step in our loop would
-	 * fail.
-	 */
 	mutex_enter(&fsht_lock);
-	fsht_detaching = 1;
-	while ((fshti = list_remove_head(&fsht_hooks)) != NULL) {
-		if (fshti->fshti_doomed)
-			continue;
-
-		mutex_enter(&fsht_owner_lock);
-		fsht_owner = curthread;
-		mutex_exit(&fsht_owner_lock);
-
-		(void) fsh_hook_remove(fshti->fshti_handle);
-
-		mutex_enter(&fsht_owner_lock);
-		fsht_owner = NULL;
-		mutex_exit(&fsht_owner_lock);
-	}
-
-	/*
-	 * fsh does not guarantee that after fsh_hook_remove(), threads won't be
-	 * executing our hooks. We have to wait for fsht_remove_cb().
-	 */
 	while (fsht_hooks_count > 0)
 		cv_wait(&fsht_hooks_empty, &fsht_lock);
-
-	while ((cb = list_remove_head(&fsht_cbs)) != NULL)
-		ASSERT(fsh_callback_remove(cb->fshtcbi_handle) == 0);
-
 	mutex_exit(&fsht_lock);
-	mutex_destroy(&fsht_lock);
-	mutex_destroy(&fsht_owner_lock);
 
 	cv_destroy(&fsht_hooks_empty);
-
-	ASSERT(list_is_empty(&fsht_hooks));
-	list_destroy(&fsht_hooks);
-
-	ASSERT(list_is_empty(&fsht_cbs));
-	list_destroy(&fsht_cbs);
+	mutex_destroy(&fsht_lock);
 
 	return (DDI_SUCCESS);
 }
@@ -492,6 +513,7 @@ fsht_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	return (0);
 }
 
+
 static int
 fsht_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
 	int *rvalp)
@@ -522,59 +544,47 @@ fsht_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
 		mutex_exit(&fsht_lock);
 		return (0);
 	}
-	case FSHT_HOOKS_INSTALL: {
+	case FSHT_HOOK_INSTALL: {
 		fsht_hook_ioc_t io;
 		file_t *file;
+		vfs_t *vfsp;
 
 		if (ddi_copyin((void *)arg, &io, sizeof (io), mode))
 			return (EFAULT);
 
-		if ((file = getf((int)io.fshthio_fd)) == NULL) {
+		if ((file = getf((int)io.install.fshthio_fd)) == NULL) {
 			*rvalp = EBADFD;
 			return (0);
 		}
+		vfsp = file->f_vnode->v_vfsp;
+		releasef((int)io.install.fshthio_fd);
 
-		*rvalp = fsht_hook_install(file->f_vnode->v_vfsp,
-		    io.fshthio_arg);
-		releasef((int)io.fshthio_fd);
+		*rvalp = fsht_hook_install(vfsp, io.install.fshthio_type,
+		    io.install.fshthio_arg, &io.out.fshthio_handle);
+
+		if (ddi_copyout(&io, (void *)arg, sizeof (io), mode))
+			return (EFAULT);
+
 		return (0);
 	}
-	case FSHT_HOOKS_REMOVE: {
+
+	case FSHT_HOOK_REMOVE: {
 		fsht_hook_ioc_t io;
-		file_t *file;
 
 		if (ddi_copyin((void *)arg, &io, sizeof (io), mode))
 			return (EFAULT);
 
-		if ((file = getf((int)io.fshthio_fd)) == NULL) {
-			*rvalp = EBADFD;
-			return (0);
-		}
-
-		*rvalp = fsht_hook_remove(file->f_vnode->v_vfsp,
-		    io.fshthio_arg);
-		releasef((int)io.fshthio_fd);
+		*rvalp = fsht_hook_remove(io.remove.fshthio_handle);
 		return (0);
 	}
 
-	case FSHT_CB_INSTALL: {
-		fsht_cb_ioc_t io;
+	case FSHT_CB_INSTALL:
+		/* TODO */
+		return (ENOTTY);
 
-		if (ddi_copyin((void *)arg, &io, sizeof (io), mode))
-			return (EFAULT);
-
-		*rvalp = fsht_callback_install(io.fshtcio_arg);
-		return (0);
-	}
-
-	case FSHT_CB_REMOVE: {
-		fsht_cb_ioc_t io;
-
-		if (ddi_copyin((void *)arg, &io, sizeof (io), mode))
-			return (EFAULT);
-		*rvalp = fsht_callback_remove(io.fshtcio_arg);
-		return (0);
-	}
+	case FSHT_CB_REMOVE:
+		/* TODO */
+		return (ENOTTY);
 
 	default:
 		return (ENOTTY);

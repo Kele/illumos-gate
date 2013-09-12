@@ -13,7 +13,7 @@
 # Copyright 2013 Damian Bogel. All rights reserved.
 #
 
-SUBDIRS = fshtestadm fshtestrun
+SUBDIRS = fshtestadm
 
 include ../Makefile.cmd
 

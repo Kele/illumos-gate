@@ -35,21 +35,34 @@ extern "C" {
 #define	FSHT_DEV_PATH	"/dev/fshtest"
 
 #define	FSHT_IOC		(('f' | 's') << 24 | 'h' << 16 | 't' << 8)
-#define	FSHT_HOOKS_INSTALL	(FSHT_IOC | 1)
-#define	FSHT_HOOKS_REMOVE	(FSHT_IOC | 2)
-#define	FSHT_CB_INSTALL		(FSHT_IOC | 3)
-#define	FSHT_CB_REMOVE		(FSHT_IOC | 4)
+#define	FSHT_HOOK_INSTALL	(FSHT_IOC | 1)
+#define	FSHT_HOOK_REMOVE	(FSHT_IOC | 2)
+#define	FSHT_CB_INSTALL		(FSHT_IOC | 3)	/* TODO */
+#define	FSHT_CB_REMOVE		(FSHT_IOC | 4)	/* TODO */
 #define	FSHT_ENABLE		(FSHT_IOC | 5)
 #define	FSHT_DISABLE		(FSHT_IOC | 6)
 
-typedef struct fsht_hook_ioc {
-	int64_t	fshthio_fd;
-	int64_t	fshthio_arg;	/* Displayed by DTrace */
-} fsht_hook_ioc_t;
+#define	FSHTT_DUMMY		1
+#define	FSHTT_PREPOST		2
+#define	FSHTT_API		3
+#define	FSHTT_AFTER_REMOVE	4
+#define	FSHTT_SELF_DESTROY	5
 
-typedef struct fsht_cb_ioc {
-	int64_t	fshtcio_arg;	/* Displayed by DTrace */
-} fsht_cb_ioc_t;
+typedef struct fsht_hook_ioc {
+	union {
+		int64_t fshthio_fd;
+		int64_t fshthio_type;	/* FSHTT_XXX */
+		int64_t fshthio_arg;
+	} install;
+
+	union {
+		int64_t fshthio_handle;
+	} out;
+
+	union {
+		int64_t fshthio_handle;
+	} remove;
+} fsht_hook_ioc_t;
 
 #ifdef __cplusplus
 }

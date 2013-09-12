@@ -20,38 +20,20 @@
 extern "C" {
 #endif
 
+#define	FSHTT_DUMMY		1
+#define	FSHTT_PREPOST		2
+#define	FSHTT_API		3
+#define	FSHTT_AFTER_REMOVE	4
+#define	FSHTT_SELF_DESTROY	5
+
 int fsht_open();
 void fsht_close(int fd);
 
 int fsht_enable(int fd);
 int fsht_disable(int fd);
 
-int fsht_install_hook(int fd, char *mnt, int arg);
-int fsht_remove_hook(int fd, char *mnt, int arg);
-
-int fsht_install_callback(int fd, int arg);
-int fsht_remove_callback(int fd, int arg);
-
-typedef struct hook {
-	int 		val;
-	struct hook 	*next;
-	struct hook	*prev;
-} hook_t;
-
-typedef struct hook_list {
-	int count;
-	hook_t *head;
-} hook_list_t;
-
-void linit(hook_list_t *);
-hook_t *lhead(hook_list_t *);
-hook_t *lnext(hook_t *);
-hook_t *lprev(hook_t *);
-void linsert_head(hook_list_t *, int);
-void lremove(hook_list_t *, hook_t *);
-void lremove_head(hook_list_t *);
-int lcount(hook_list_t *);
-void lclear(hook_list_t *);
+int64_t fsht_hook_install(int fd, char *mnt, int type, int arg);
+int fsht_hook_remove(int fd, int64_t handle);
 
 #ifdef __cplusplus
 }
