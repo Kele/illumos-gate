@@ -47,7 +47,6 @@ typedef struct fsht_int {
 	fsh_handle_t	fshti_handle;
 	int		fshti_doomed;
 	fsht_arg_t	fshti_arg;
-	vfs_t		*fshti_vfsp;
 	list_node_t	fshti_next;
 } fsht_int_t;
 
@@ -353,7 +352,6 @@ fsht_hook_install(vfs_t *vfsp, int type, int arg, int64_t *handle)
 	fsht_int_t *fshti;
 
 	fshti = kmem_zalloc(sizeof (*fshti), KM_SLEEP);
-	fshti->fshti_vfsp = vfsp;
 
 	switch (type) {
 	case FSHTT_DUMMY:

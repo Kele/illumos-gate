@@ -113,22 +113,22 @@ diagnose()
 	handles[3] = fsht_hook_install(drv_fd, paths[0], FSHTT_SELF_DESTROY, 0);
 
 	for (i = 0; i < 4; i++) {
-		if (handles[i] < 0)
+		if (handles[i] < 0) {
 			(void) fprintf(stderr, "Diagnose failed for: "); 
-
-		switch (i) {
-		case 0:
-			(void) fprintf(stderr, "pre-post\n");
-			break;
-		case 1:
-			(void) fprintf(stderr, "api\n");
-			break;
-		case 2:
-			(void) fprintf(stderr, "after remove\n");
-			break;
-		case 3:
-			(void) fprintf(stderr, "self destroy\n");
-			break;
+			switch (i) {
+			case 0:
+				(void) fprintf(stderr, "pre-post\n");
+				break;
+			case 1:
+				(void) fprintf(stderr, "api\n");
+				break;
+			case 2:
+				(void) fprintf(stderr, "after remove\n");
+				break;
+			case 3:
+				(void) fprintf(stderr, "self destroy\n");
+				break;
+			}
 		}
 
 		if (handles[i] == -1)
@@ -183,7 +183,8 @@ run_test(int iterations)
 			break;
 
 		case 1:
-			rand_dummy_remove();
+			if (installed_hooks_count > 0)
+				rand_dummy_remove();
 			break;
 
 		case 2:
@@ -233,7 +234,7 @@ main(int argc, char *argv[])
 
 	srand(time(0));
 
-	if (argc != 5) {
+	if (argc != 4) {
 		(void) printf(
 		    "Usage: fshtestrun tests iterations mntpoint pathfile\n"
 		    "\ttests - number of tests to run\n"
