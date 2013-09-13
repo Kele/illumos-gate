@@ -48,18 +48,18 @@ extern "C" {
 #define	FSHTT_AFTER_REMOVE	4
 #define	FSHTT_SELF_DESTROY	5
 
-typedef struct fsht_hook_ioc {
-	union {
+typedef union fsht_hook_ioc {
+	struct {
 		int64_t fshthio_fd;
 		int64_t fshthio_type;	/* FSHTT_XXX */
 		int64_t fshthio_arg;
 	} install;
 
-	union {
+	struct {
 		int64_t fshthio_handle;
 	} out;
 
-	union {
+	struct {
 		int64_t fshthio_handle;
 	} remove;
 } fsht_hook_ioc_t;
