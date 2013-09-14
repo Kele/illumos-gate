@@ -333,11 +333,12 @@ fsd_remove_cb(void *arg, fsh_handle_t handle)
 	kmem_free(fsdi, sizeof (*fsdi));
 
 	fsd_list_count--;
-	if (fsd_list_count == 0)
-		cv_signal(&fsd_cv_empty);
 
-	if (!fsd_context)
+	if (!fsd_context) {
+		if (fsd_list_count == 0)
+			cv_signal(&fsd_cv_empty);
 		mutex_exit(&fsd_lock);
+	}
 }
 
 /*
@@ -622,25 +623,27 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	 * won't try to remove entries from fsd_list.
 	 */
 	fsd_detaching = 1;
+
+	mutex_enter(&fsd_rem_thread_lock);
+	ASSERT(fsd_rem_thread == NULL);
+	fsd_rem_thread = curthread;
+	mutex_exit(&fsd_rem_thread_lock);
+
 	while ((fsdi = list_remove_head(&fsd_list)) != NULL) {
 		if (fsdi->fsdi_doomed == 0) {
 			fsdi->fsdi_doomed = 1;
-
-			mutex_enter(&fsd_rem_thread_lock);
-			fsd_rem_thread = curthread;
-			mutex_exit(&fsd_rem_thread_lock);
-
 			/*
 			 * fsd_lock is held, so no other thread could have
 			 * removed this hook.
 			 */
 			ASSERT(fsh_hook_remove(fsdi->fsdi_handle) == 0);
-
-			mutex_enter(&fsd_rem_thread_lock);
-			fsd_rem_thread = NULL;
-			mutex_exit(&fsd_rem_thread_lock);
 		}
 	}
+
+	mutex_enter(&fsd_rem_thread_lock);
+	ASSERT(fsd_rem_thread == curthread);
+	fsd_rem_thread = NULL;
+	mutex_exit(&fsd_rem_thread_lock);
 
 	while (fsd_list_count > 0)
 		cv_wait(&fsd_cv_empty, &fsd_lock);
