@@ -47,7 +47,7 @@ typedef struct fsht_int {
 	fsh_handle_t	fshti_handle;
 	int		fshti_doomed;
 	fsht_arg_t	fshti_arg;
-	list_node_t	fshti_next;
+	list_node_t	fshti_node;
 } fsht_int_t;
 
 typedef struct fsht_cb_int {
@@ -59,13 +59,19 @@ typedef struct fsht_cb_int {
 static dev_info_t *fsht_devi;
 
 /*
- * fsht_lock protects: fsht_detaching, fsht_hooks_count, fsht_hooks_empty,
- * fsht_enabled
+ * fsht_lock protects: fsht_detaching, fsht_hooks, fsht_hooks_count,
+ * fsht_hooks_empty, fsht_enabled
  */
 static kmutex_t fsht_lock;
 
+static int fsht_detaching;
+
+static list_t fsht_hooks;
 static int fsht_hooks_count;
 static kcondvar_t fsht_hooks_empty;
+
+static kthread_t *fsht_owner;
+static kmutex_t fsht_owner_lock;
 
 static int fsht_enabled;
 
@@ -102,7 +108,7 @@ pre_hook(void *arg1, void **instancepp)
 
 		if ((cb_handle = fsh_callback_install(&cb)) != -1)
 			VERIFY(fsh_callback_remove(cb_handle) == 0);
-
+		
 		fsh_exec_mount_callbacks(vfsp);
 		fsh_exec_free_callbacks(vfsp);
 
@@ -285,7 +291,9 @@ fsht_remove_cb(void *arg1, fsh_handle_t handle)
 
 	fsht_int_t *fshti = (fsht_int_t *)arg1;
 	fsht_arg_t *arg = &fshti->fshti_arg;
+	int fsht_context;
 
+	/* Tests */
 	switch (arg->op) {
 	case FSHTT_DUMMY:
 		break;
@@ -335,14 +343,27 @@ fsht_remove_cb(void *arg1, fsh_handle_t handle)
 		break;
 	}
 
+
+	/* Cleaning up */
+	mutex_enter(&fsht_owner_lock);
+	fsht_context = fsht_owner == curthread;
+	mutex_exit(&fsht_owner_lock);
+
+	if (!fsht_context)
+		mutex_enter(&fsht_lock);
+
+	if (!fsht_detaching)
+		list_remove(&fsht_hooks, fshti);
 	kmem_free(fshti, sizeof (*fshti));
 
-	mutex_enter(&fsht_lock);
 	VERIFY(fsht_hooks_count > 0);
 	fsht_hooks_count--;
-	if (fsht_hooks_count == 0)
-		cv_signal(&fsht_hooks_empty);
-	mutex_exit(&fsht_lock);
+
+	if (!fsht_context) {
+		if (fsht_hooks_count == 0)
+			cv_signal(&fsht_hooks_empty);
+		mutex_exit(&fsht_lock);
+	}
 }
 
 static int
@@ -424,10 +445,16 @@ fsht_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	ddi_report_dev(fsht_devi);
 
 	fsht_enabled = 0;
-	fsht_hooks_count = 0;
+	fsht_detaching = 0;
 
+	fsht_hooks_count = 0;
 	mutex_init(&fsht_lock, NULL, MUTEX_DRIVER, NULL);
+	list_create(&fsht_hooks, sizeof (fsht_int_t),
+	    offsetof(fsht_int_t, fshti_node));
 	cv_init(&fsht_hooks_empty, NULL, CV_DRIVER, NULL);
+
+	fsht_owner = NULL;
+	mutex_init(&fsht_owner_lock, NULL, MUTEX_DRIVER, NULL);
 
 	return (DDI_SUCCESS);
 }
@@ -436,6 +463,7 @@ static int
 fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 {
 	int enabled;
+	fsht_int_t *fshti;
 
 	if (cmd != DDI_DETACH)
 		return (DDI_FAILURE);
@@ -452,11 +480,37 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	ddi_remove_minor_node(dip, NULL);
 	fsht_devi = NULL;
 
+
 	mutex_enter(&fsht_lock);
+
+	fsht_detaching = 1;
+
+	mutex_enter(&fsht_owner_lock);
+	VERIFY(fsht_owner == NULL);
+	fsht_owner = curthread;
+	mutex_exit(&fsht_owner_lock);
+
+	while ((fshti = list_remove_head(&fsht_hooks)) != NULL) {
+		/* Since we have no free callback, there's no VERIFY() here */
+		(void) fsh_hook_remove(fshti->fshti_handle);
+	}
+
+	mutex_enter(&fsht_owner_lock);
+	VERIFY(fsht_owner == curthread);
+	fsht_owner = NULL;
+	mutex_exit(&fsht_owner_lock);
+	
+	/* Some hooks might still be running. */
 	while (fsht_hooks_count > 0)
 		cv_wait(&fsht_hooks_empty, &fsht_lock);
+
 	mutex_exit(&fsht_lock);
 
+
+	VERIFY(list_is_empty(&fsht_hooks));
+	list_destroy(&fsht_hooks);
+	
+	mutex_destroy(&fsht_owner_lock);
 	cv_destroy(&fsht_hooks_empty);
 	mutex_destroy(&fsht_lock);
 
