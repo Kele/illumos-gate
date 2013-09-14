@@ -121,7 +121,7 @@
  * a) fsh.h
  * Any of these functions could be called in a hook or a hook remove callback.
  * The only functions that must not be called inside a {mount,free} callback are
- * fsd_callback_{install,remove}. Using them will cause a deadlock.
+ * fsh_callback_{install,remove}. Using them will cause a deadlock.
  *
  *
  * fsh_fs_enable(vfs_t *vfsp)
@@ -188,8 +188,8 @@
  *	from fsh_map and marks the hook as *doomed*
  *	- if fsh_int_t is on the fshfsr_list, it's alive and there is a thread
  *	executing it
- *	- if fsh_int_t is marked as *doomed*, the reference counter is not
- *	be increased and thus no thread can acquire this fsh_int_t
+ *	- if fsh_int_t is marked as *doomed*, the reference counter is can't be
+ *	increased and thus no thread can acquire this fsh_int_t
  *	- ref. counter can drop to 0 only after an fsh_hook_remove() call; this
  *	also means that the fsh_int_t is *doomed* and isn't a part of fsh_map
  *	- fsh_int_t could be also destroyed without fsh_hook_remove() call,
