@@ -79,7 +79,7 @@ static int fsht_enabled;
 static void
 pre_hook(void *arg1, void **instancepp)
 {
-	fsht_arg_t *arg = arg1;
+	fsht_arg_t *arg = &((fsht_int_t *)arg1)->fshti_arg;
 
 	switch (arg->op) {
 	case FSHTT_DUMMY:
@@ -125,7 +125,7 @@ pre_hook(void *arg1, void **instancepp)
 
 	case FSHTT_AFTER_REMOVE:
 		/*
-		 * Set before installing.
+		 * Set while installing.
 		 * Remove callback sets magic2 to some sentinel value.
 		 */
 		VERIFY(arg->magic2 == arg->magic1);
@@ -148,7 +148,7 @@ pre_hook(void *arg1, void **instancepp)
 static void
 post_hook(void *arg1, void *instancep)
 {
-	fsht_arg_t *arg = arg1;
+	fsht_arg_t *arg = &((fsht_int_t *)arg1)->fshti_arg;
 
 	switch (arg->op) {
 	case FSHTT_DUMMY:
@@ -382,15 +382,19 @@ fsht_hook_install(vfs_t *vfsp, int type, int arg, int64_t *handle)
 	case FSHTT_API:
 		break;
 
+	case FSHTT_AFTER_REMOVE:
+		fshti->fshti_arg.magic2 = FSHT_MAGIC;
+		/*FALLTHROUGH*/
 	case FSHTT_PREPOST:
 	case FSHTT_SELF_DESTROY:
-	case FSHTT_AFTER_REMOVE:
 		fshti->fshti_arg.magic1 = FSHT_MAGIC;
 		break;
 
 	default:
 		return (EINVAL);
 	}
+
+	fshti->fshti_arg.op = type;
 
 	hook.arg = fshti;
 
@@ -407,6 +411,7 @@ fsht_hook_install(vfs_t *vfsp, int type, int arg, int64_t *handle)
 	hook.remove_cb = fsht_remove_cb;
 
 	*handle = fshti->fshti_handle = fsh_hook_install(vfsp, &hook);
+	fshti->fshti_arg.handle = *handle;
 	if (fshti->fshti_handle == -1) {
 		kmem_free(fshti, sizeof (*fshti));
 		return (EAGAIN);
