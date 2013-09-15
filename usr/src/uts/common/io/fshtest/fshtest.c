@@ -413,6 +413,7 @@ fsht_hook_install(vfs_t *vfsp, int type, int arg, int64_t *handle)
 	}
 
 	mutex_enter(&fsht_lock);
+	list_insert_head(&fsht_hooks, fshti);
 	fsht_hooks_count++;
 	mutex_exit(&fsht_lock);
 

@@ -53,14 +53,17 @@ typedef union fsht_hook_ioc {
 		int64_t fshthio_fd;
 		int64_t fshthio_type;	/* FSHTT_XXX */
 		int64_t fshthio_arg;
+		int64_t _padding;
 	} install;
 
 	struct {
 		int64_t fshthio_handle;
+		int64_t _padding[3];
 	} out;
 
 	struct {
 		int64_t fshthio_handle;
+		int64_t _padding[3];
 	} remove;
 } fsht_hook_ioc_t;
 
