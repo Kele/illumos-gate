@@ -594,8 +594,10 @@ fsh_hook_remove(fsh_handle_t handle)
 		}
 	}
 
-	if (fshi == NULL)
+	if (fshi == NULL) {
+		mutex_exit(&fsh_lock);
 		return (-1);
+	}
 
 	mutex_enter(&fshi->fshi_lock);
 	ASSERT(fshi->fshi_doomed == 0);
