@@ -64,9 +64,6 @@ extern int fsh_hook_remove(fsh_handle_t);
 extern fsh_callback_handle_t fsh_callback_install(fsh_callback_t *);
 extern int fsh_callback_remove(fsh_callback_handle_t);
 
-extern void fsh_fs_enable(vfs_t *);
-extern void fsh_fs_disable(vfs_t *);
-
 #ifdef __cplusplus
 }
 #endif

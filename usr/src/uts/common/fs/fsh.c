@@ -124,10 +124,6 @@
  * fsh_callback_{install,remove}. Using them will cause a deadlock.
  *
  *
- * fsh_fs_enable(vfs_t *vfsp)
- * fsh_fs_disable(vfs_t *vfsp)
- * 	Enables/disables fsh for a given vfs_t.
- *
  * fsh_hook_install(vfs_t *vfsp, fsh_t *hooks)
  * 	Installs hooks on vfsp filesystem.
  *	It's important that hooks are executed in LIFO installation order,
@@ -201,7 +197,6 @@
  * fsh_fsrecord_t contains:
  *	- an rw-lock that protects the structure
  *	- a list of hooks installed on this vfs_t
- * 	- a flag which tells whether fsh is enabled on this vfs_t
  *
  *
  * fsh_fsrec_prepare rule:
@@ -346,7 +341,6 @@ static kmutex_t fsh_lock;
  */
 struct fsh_fsrecord {
 	krwlock_t	fshfsr_lock;
-	int		fshfsr_enabled;
 	list_t		fshfsr_list;
 };
 
@@ -418,36 +412,6 @@ fsh_fsrec_prepare(vfs_t *vfsp)
 
 	if (fsrec == NULL)
 		atomic_swap_ptr(&vfsp->vfs_fshrecord, fsh_fsrec_create());
-}
-
-/*
- * API for enabling/disabling fsh per vfs_t.
- *
- * A newly created vfs_t has fsh enabled by default. If one would want to change
- * this behaviour, mount callbacks could be used.
- *
- * The caller is expected to hold the vfs_t.
- *
- * These functions must NOT be called in a hook.
- */
-void
-fsh_fs_enable(vfs_t *vfsp)
-{
-	fsh_fsrec_prepare(vfsp);
-
-	rw_enter(&vfsp->vfs_fshrecord->fshfsr_lock, RW_WRITER);
-	vfsp->vfs_fshrecord->fshfsr_enabled = 1;
-	rw_exit(&vfsp->vfs_fshrecord->fshfsr_lock);
-}
-
-void
-fsh_fs_disable(vfs_t *vfsp)
-{
-	fsh_fsrec_prepare(vfsp);
-
-	rw_enter(&vfsp->vfs_fshrecord->fshfsr_lock, RW_WRITER);
-	vfsp->vfs_fshrecord->fshfsr_enabled = 0;
-	rw_exit(&vfsp->vfs_fshrecord->fshfsr_lock);
 }
 
 /*
@@ -799,15 +763,10 @@ fsh_read(vnode_t *vp, uio_t *uiop, int ioflag, cred_t *cr,
 	fsh_fsrec_prepare(vp->v_vfsp);
 	fsrecp = vp->v_vfsp->vfs_fshrecord;
 
-	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
-	if (!(fsrecp->fshfsr_enabled)) {
-		rw_exit(&fsrecp->fshfsr_lock);
-		return ((*vp->v_op->vop_read)(vp, uiop, ioflag, cr, ct));
-	}
-
 	list_create(&exec_list, sizeof (fsh_exec_t),
 	    offsetof(fsh_exec_t, fshe_node));
 
+	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
 	for (fshi = list_head(&fsrecp->fshfsr_list); fshi != NULL;
 	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
 		if (fshi->fshi_hooks.pre_read != NULL ||
@@ -861,15 +820,10 @@ fsh_write(vnode_t *vp, uio_t *uiop, int ioflag, cred_t *cr,
 	fsh_fsrec_prepare(vp->v_vfsp);
 	fsrecp = vp->v_vfsp->vfs_fshrecord;
 
-	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
-	if (!(fsrecp->fshfsr_enabled)) {
-		rw_exit(&fsrecp->fshfsr_lock);
-		return ((*vp->v_op->vop_write)(vp, uiop, ioflag, cr, ct));
-	}
-
 	list_create(&exec_list, sizeof (fsh_exec_t),
 	    offsetof(fsh_exec_t, fshe_node));
 
+	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
 	for (fshi = list_head(&fsrecp->fshfsr_list); fshi != NULL;
 	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
 		if (fshi->fshi_hooks.pre_write != NULL ||
@@ -922,15 +876,10 @@ fsh_mount(vfs_t *vfsp, vnode_t *mvp, struct mounta *uap, cred_t *cr)
 	fsh_fsrec_prepare(vfsp);
 	fsrecp = vfsp->vfs_fshrecord;
 
-	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
-	if (!(fsrecp->fshfsr_enabled)) {
-		rw_exit(&fsrecp->fshfsr_lock);
-		return ((*vfsp->vfs_op->vfs_mount)(vfsp, mvp, uap, cr));
-	}
-
 	list_create(&exec_list, sizeof (fsh_exec_t),
 	    offsetof(fsh_exec_t, fshe_node));
 
+	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
 	for (fshi = list_head(&fsrecp->fshfsr_list); fshi != NULL;
 	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
 		if (fshi->fshi_hooks.pre_mount != NULL ||
@@ -983,15 +932,10 @@ fsh_unmount(vfs_t *vfsp, int flag, cred_t *cr)
 	fsh_fsrec_prepare(vfsp);
 	fsrecp = vfsp->vfs_fshrecord;
 
-	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
-	if (!(fsrecp->fshfsr_enabled)) {
-		rw_exit(&fsrecp->fshfsr_lock);
-		return ((*vfsp->vfs_op->vfs_unmount)(vfsp, flag, cr));
-	}
-
 	list_create(&exec_list, sizeof (fsh_exec_t),
 	    offsetof(fsh_exec_t, fshe_node));
 
+	rw_enter(&fsrecp->fshfsr_lock, RW_READER);
 	for (fshi = list_head(&fsrecp->fshfsr_list); fshi != NULL;
 	    fshi = list_next(&fsrecp->fshfsr_list, fshi)) {
 		if (fshi->fshi_hooks.pre_unmount != NULL ||
@@ -1046,7 +990,6 @@ fsh_fsrec_create()
 	list_create(&fsrecp->fshfsr_list, sizeof (fsh_int_t),
 	    offsetof(fsh_int_t, fshi_node));
 	rw_init(&fsrecp->fshfsr_lock, NULL, RW_DRIVER, NULL);
-	fsrecp->fshfsr_enabled = 1;
 	return (fsrecp);
 }
 
