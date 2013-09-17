@@ -13,20 +13,7 @@
 # Copyright 2013 Damian Bogel. All rights reserved.
 #
 
-SUBDIRS = fshtestadm stress
+PROG = stress
+OBJS = stress.o ../common/common.o
 
-include ../Makefile.cmd
-
-all :=		TARGET = all
-check :=	TARGET = check
-clean :=	TARGET = clean
-clobber :=	TARGET = clobber
-install :=	TARGET = install
-lint :=		TARGET = lint
-
-all check clean clobber install lint: $(SUBDIRS)
-
-$(SUBDIRS): FRC
-	@cd $@; pwd; $(MAKE) $(TARGET)
-
-FRC:
+include ../common/Makefile.com
