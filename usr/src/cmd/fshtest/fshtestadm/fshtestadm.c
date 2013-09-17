@@ -36,25 +36,56 @@ static char paths[MAXFILES][MAXPATHLEN];
 static int paths_count;
 
 #define	MAXHOOKS 100000
-typedef struct dummy_hook {
+typedef struct hook {
 	int64_t	handle;
 	int	arg;
-} dummy_hook_t;
+	int	type;
+} hook_t;
 
-static dummy_hook_t installed_hooks[MAXHOOKS];
+static hook_t installed_hooks[MAXHOOKS];
 static int installed_hooks_count;
 
 static int arg;
 
-void
-rand_dummy_install()
+const char *
+xlate_type(int type)
+{
+	switch(type) {
+	case FSHTT_DUMMY:
+		return ("FSHTT_DUMMY");
+	case FSHTT_PREPOST:
+		return ("FSHTT_PREPOST");
+	case FSHTT_API:
+		return ("FSHTT_API");
+	case FSHTT_AFTER_REMOVE:
+		return ("FSHTT_AFTER_REMOVE");
+	case FSHTT_SELF_DESTROY:
+		return ("FSHTT_SELF_DESTROY");
+	default:
+		return ("<bad type>");
+	}
+}
+
+int64_t
+hook_install(char *path, int type)
 {
 	int64_t handle;
+	int real_arg;
 
-	if (!(installed_hooks_count + 1 < MAXHOOKS))
-		return;
+	if (installed_hooks_count + 1 >= MAXHOOKS)
+		return (-1);
+	
+	if (type == FSHTT_DUMMY) {
+		real_arg = arg++;
+	} else if (type == FSHTT_API) {
+		real_arg = 0;
+	} else {
+		real_arg = 0xB06E1;
+	}
 
-	handle = fsht_hook_install(drv_fd, paths[0], FSHTT_DUMMY, arg++);
+	handle = fsht_hook_install(drv_fd, path, type, real_arg);
+
+	arg++;
 	if (handle == -1) {
 		(void) fprintf(stderr, "Hook limit exceeded.\n");
 
@@ -63,12 +94,61 @@ rand_dummy_install()
 
 	} else if (handle == -3) {
 		(void) fprintf(stderr,
-		    "Bad type passed to fsht_hook_install()\n");
+		    "Bad type passed to fsh_hook_install()\n");
 	}
 
-	installed_hooks[installed_hooks_count].arg = arg++;
+	(void) printf("fsh_hook_install(op = %d, magic1 = %d) "
+	    "= %lld\n", type, real_arg, handle);
+
+	installed_hooks[installed_hooks_count].arg = real_arg;
 	installed_hooks[installed_hooks_count].handle = handle;
+	installed_hooks[installed_hooks_count].type = type;
 	installed_hooks_count++;
+
+	return (handle);
+}
+
+void
+hook_remove(int64_t handle, int pos, int cb)
+{
+	int i;
+
+	if (pos != -1) {
+		handle = installed_hooks[pos].handle;
+
+	} else {
+		int i;
+		for (i = 0; i < installed_hooks_count; i++) {
+			if (installed_hooks[i].handle == handle) {
+				pos = i;
+				break;
+			}
+		}
+	}
+
+	(void) printf("fsh_hook_remove(%lld)\n", handle);
+
+	if (fsht_hook_remove(drv_fd, handle) != 0)
+		(void) fprintf(stderr, "fsh_hook_remove() failed\n");
+	else if (cb) {
+		(void) printf("fsht_remove_cb(%lld)\n", handle);
+		if (installed_hooks[pos].type == FSHTT_API) {
+			(void) printf("fsh_hook_install(EMPTY)\n");
+			(void) printf("fsh_hook_remove(EMPTY)\n");
+		}
+	}
+
+	for (i = pos; i < installed_hooks_count - 1; i++) {
+		(void) memcpy(&installed_hooks[i],
+		    &installed_hooks[i + 1], sizeof (hook_t));
+	}
+	installed_hooks_count--;
+}
+
+void
+rand_dummy_install()
+{
+	(void) hook_install(paths[0], FSHTT_DUMMY);
 }
 
 void
@@ -76,27 +156,75 @@ rand_dummy_remove()
 {
 	int pos;
 	pos = rand() % installed_hooks_count;
-
-	if (fsht_hook_remove(drv_fd, installed_hooks[pos].handle) != 0)
-		(void) fprintf(stderr, "fsht_hook_remove() failed\n");
-
-	installed_hooks[pos].handle =
-	    installed_hooks[installed_hooks_count - 1].handle;
-	installed_hooks[pos].arg =
-	    installed_hooks[installed_hooks_count - 1].arg;
-
-	installed_hooks_count--;
+	
+	hook_remove(-1, pos, 1);	
 }
 
 void
-print_hooks(const char *func)
+print_hooks(const char *funcname)
 {
 	int i;
-	for (i = installed_hooks_count - 1; i >= 0; i--)
-		(void) printf("pre %s %d\n", func, installed_hooks[i].arg);
+	for (i = installed_hooks_count - 1; i >= 0; i--) {
+		(void) printf("pre %s:\thandle = %lld\n",
+		    funcname, installed_hooks[i].handle);
 
-	for (i = 0; i < installed_hooks_count; i++)
-		(void) printf("post %s %d\n", func, installed_hooks[i].arg);
+		switch (installed_hooks[i].type) {
+		case FSHTT_API:
+			(void) printf("fsh_hook_install(EMPTY)\n");
+			(void) printf("fsh_hook_remove(EMPTY)\n");
+			break;
+		
+		case FSHTT_SELF_DESTROY:
+			(void) printf("fsh_hook_remove(%lld)\n",
+			    installed_hooks[i].handle);
+			break;
+
+		default:
+			break;
+		}
+	}
+
+	for (i = 0; i < installed_hooks_count; i++) {
+		(void) printf("post %s:\thandle = %lld\n",
+		    funcname, installed_hooks[i].handle);
+
+		switch (installed_hooks[i].type) {
+		case FSHTT_API:
+			(void) printf("fsh_hook_install(EMPTY)\n");
+			(void) printf("fsh_hook_remove(EMPTY)\n");
+			break;
+		
+		case FSHTT_SELF_DESTROY:
+			break;
+
+		default:
+			break;
+		}
+	}
+
+	for (i = 0; i < installed_hooks_count; i++) {
+		if (installed_hooks[i].type == FSHTT_SELF_DESTROY)
+			(void) printf("fsht_remove_cb(%lld)\n",
+			    installed_hooks[i].handle);
+	}
+}
+
+void
+run_read(const char *path)
+{
+	char buf[100];
+	int fd;
+
+	if ((fd = open(path, O_RDONLY)) == -1) {
+		(void) fprintf(stderr, "open() failed for %s\n", path);
+		perror("Error");
+		return;
+	}
+	
+	(void) read(fd, buf, 100);
+	print_hooks("read");
+
+	(void) close(fd);
 }
 
 void
@@ -104,80 +232,42 @@ diagnose()
 {
 	int i;
 	int64_t handles[4];
-	int fd;
-	char buf[100];
-
-	handles[0] = fsht_hook_install(drv_fd, paths[0], FSHTT_PREPOST, 0);
-	handles[1] = fsht_hook_install(drv_fd, paths[0], FSHTT_API, 0);
-	handles[2] = fsht_hook_install(drv_fd, paths[0], FSHTT_AFTER_REMOVE, 0);
-	handles[3] = fsht_hook_install(drv_fd, paths[0], FSHTT_SELF_DESTROY, 0);
-
-	for (i = 0; i < 4; i++) {
-		if (handles[i] < 0) {
-			(void) fprintf(stderr, "Diagnose failed for: "); 
-			switch (i) {
-			case 0:
-				(void) fprintf(stderr, "pre-post\n");
-				break;
-			case 1:
-				(void) fprintf(stderr, "api\n");
-				break;
-			case 2:
-				(void) fprintf(stderr, "after remove\n");
-				break;
-			case 3:
-				(void) fprintf(stderr, "self destroy\n");
-				break;
-			}
-		}
-
-		if (handles[i] == -1)
-			(void) fprintf(stderr, "Hook limit exceeded.\n");
-		else if (handles[i] == -2)
-			(void) fprintf(stderr, "open() failed! %s\n",
-			    strerror(errno));
-		else if (handles[i] == -3)
-			(void) fprintf(stderr, 
-			    "Bad type passed to fsht_hook_install()\n");
-	}
-
-	fd = open(paths[0], O_RDONLY);
-	if (fd == -1)
-		(void) fprintf(stderr, "open() failed! %s\n", strerror(errno));
-
-	(void) read(fd, buf, 100);
+	int types[4] = { FSHTT_PREPOST, FSHTT_API, FSHTT_AFTER_REMOVE,
+	    FSHTT_SELF_DESTROY };
 	
-	/*
-	 * - handles[3] is already removed
-	 */
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < 4; i++) {
+		handles[i] = hook_install(paths[0], types[i]);
+
+		if (handles[i] < 0) {
+			(void) fprintf(stderr, "Diagnose failed for: %s",
+			    xlate_type(types[i]));
+		}
+	}
+	
+	run_read(paths[0]);
+	
+	/* FSHTT_SELF_DESTROY is already removed */
+	for (i = 0; i < 4; i++) {
 		if (handles[i] > 0)
-			if (fsht_hook_remove(drv_fd, handles[i]) != 0)
-				(void) fprintf(stderr,
-				    "fsht_hook_remove failed!");
+			hook_remove(handles[i], -1, 1);
 	}
 
-	/*
-	 * read() again for handles[2] test
-	 */
-	(void) read(fd, buf, 100);
-
-	if (fd != -1)
-		(void) close(fd);
+	/* read() again for FSHTT_AFTER_REMOVE test */
+	run_read(paths[0]);
 }
 
 void
 run_test(int iterations)
 {
-	int fd, i, op;
+	int i, op;
 
 	arg = 0;
 
 	diagnose();
 
 	for (i = 0; i < iterations; i++) {
-		(void) usleep(1000);
-		switch (op = rand() % 4) {
+		(void) usleep(1000);	/* So that DTrace could follow. */
+		switch (op = rand() % 3) {
 		case 0:
 			rand_dummy_install();
 			break;
@@ -188,41 +278,16 @@ run_test(int iterations)
 			break;
 
 		case 2:
-		case 3: {
-			/* read, write */
-
-			char buf[100];
-			int choice = rand() % paths_count;
-
-			fd = open(paths[choice], O_RDWR);
-			if (fd == -1) {
-				(void) fprintf(stderr,
-				    "Error: Cannot open file %s: %s\n",
-				    paths[choice], strerror(errno));
-				return;
-			}
-
-			if (op == 2) {
-				(void) read(fd, buf, 100);
-				print_hooks("read");
-
-			} else { /* op == 3 */
-				(void) write(fd, buf, 100);
-				print_hooks("write");
-			}
-
-			(void) close(fd);
+			run_read(paths[rand() % paths_count]);
 			break;
-		}
 
 		default:
 			break;
 		}
 	}
 
-	for (i = 0; i < installed_hooks_count; i++)
-		(void) fsht_hook_remove(drv_fd, installed_hooks[i].handle);
-	installed_hooks_count = 0;
+	while (installed_hooks_count > 0)
+		hook_remove(-1, 0, 1);
 }
 
 int
