@@ -112,9 +112,6 @@ pre_hook(void *arg1, void **instancepp)
 		fsh_exec_mount_callbacks(vfsp);
 		fsh_exec_free_callbacks(vfsp);
 
-		fsh_fs_enable(vfsp);
-		fsh_fs_disable(vfsp);
-
 		/*
 		 * fsh_fsrec_destroy() is called inside vfs_free()
 		 */
@@ -181,9 +178,6 @@ post_hook(void *arg1, void *instancep)
 
 		fsh_exec_mount_callbacks(vfsp);
 		fsh_exec_free_callbacks(vfsp);
-
-		fsh_fs_enable(vfsp);
-		fsh_fs_disable(vfsp);
 
 		/*
 		 * fsh_fsrec_destroy() is called inside vfs_free()
@@ -319,9 +313,6 @@ fsht_remove_cb(void *arg1, fsh_handle_t handle)
 
 		fsh_exec_mount_callbacks(vfsp);
 		fsh_exec_free_callbacks(vfsp);
-
-		fsh_fs_enable(vfsp);
-		fsh_fs_disable(vfsp);
 
 		/*
 		 * fsh_fsrec_destroy() is called inside vfs_free()
