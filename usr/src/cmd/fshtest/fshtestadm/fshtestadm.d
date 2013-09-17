@@ -1,6 +1,7 @@
 BEGIN
 {
 	self->fop = "<badfop>";
+	self->destroy = 0;
 	self->inside = 0;
 }
 
@@ -24,12 +25,12 @@ BEGIN
 }
 
 ::fsh_hook_remove:entry
-/ self->inside == 0 /
+/ self->inside == 0 || self->destroy == 1 /
 {
 	printf("fsh_hook_remove(%d)\n", args[0]);
 }
 ::fsh_hook_remove:entry
-/ self->inside == 1 /
+/ self->inside == 1 && self->destroy != 1/
 {
 	printf("fsh_hook_remove(EMPTY)\n");
 }
@@ -44,6 +45,7 @@ BEGIN
 ::fsht_remove_cb:return
 {
 	self->inside = 0;
+	self->destroy = 0;
 }
 
 
@@ -65,11 +67,13 @@ BEGIN
 	printf("pre %s:\thandle = %d\n", self->fop, this->fshti->fshti_handle);
 
 	self->inside = 1;
+	self->destroy = this->fshtarg->op == 5 ? 1 : 0;
 }
 
 :fshtest:pre_hook:return
 {
 	self->inside = 0;
+	self->destroy = 0;
 }
 
 :fshtest:post_hook:entry
@@ -80,9 +84,11 @@ BEGIN
 	printf("post %s:\thandle = %d\n", self->fop, this->fshti->fshti_handle);
 
 	self->inside = 1;
+	self->destroy = this->fshtarg->op == 5 ? 1 : 0;
 }
 
 :fshtest:post_hook:return
 {
 	self->inside = 0;
+	self->destroy = 0;
 }
