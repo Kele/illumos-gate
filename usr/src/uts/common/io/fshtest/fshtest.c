@@ -53,14 +53,14 @@ typedef struct fsht_int {
 typedef struct fsht_cb_int {
 	fsh_callback_handle_t fshtcbi_handle;
 	int64_t		fshtcbi_arg;
-	list_node_t	fshtcbi_next;
+	list_node_t	fshtcbi_node;
 } fsht_cb_int_t;
 
 static dev_info_t *fsht_devi;
 
 /*
  * fsht_lock protects: fsht_detaching, fsht_hooks, fsht_hooks_count,
- * fsht_hooks_empty, fsht_enabled
+ * fsht_hooks_empty, fsht_enabled, fsht_cbs, fsht_cbs_count
  */
 static kmutex_t fsht_lock;
 
@@ -73,7 +73,44 @@ static kcondvar_t fsht_hooks_empty;
 static kthread_t *fsht_owner;
 static kmutex_t fsht_owner_lock;
 
+static list_t fsht_cbs;
+
 static int fsht_enabled;
+
+
+/*ARGSUSED*/
+static void
+api_callback(vfs_t *vfsp, void *arg)
+{
+	fsh_handle_t handle;
+	fsh_t hook = { 0 };
+	int *deep = arg;
+	vfs_t *vfsp1;
+
+	if ((handle = fsh_hook_install(vfsp, &hook)) != -1)
+		VERIFY(fsh_hook_remove(handle) == 0);
+
+	if (*deep < 2) {
+		*deep = *deep + 1;
+		fsh_exec_mount_callbacks(vfsp);
+		fsh_exec_free_callbacks(vfsp);
+
+		vfsp1 = vfs_alloc(KM_SLEEP);
+
+		if ((handle = fsh_hook_install(vfsp1, &hook)) != -1)
+			VERIFY(fsh_hook_remove(handle) == 0);
+
+		fsh_exec_mount_callbacks(vfsp1);
+		fsh_exec_free_callbacks(vfsp1);
+
+		/*
+		 * fsh_fsrec_destroy() is called inside vfs_free()
+		 */
+		vfs_free(vfsp1);
+	}
+
+
+}
 
 /* Testing hooks */
 static void
@@ -106,11 +143,19 @@ pre_hook(void *arg1, void **instancepp)
 		if ((handle = fsh_hook_install(vfsp, &hook)) != -1)
 			VERIFY(fsh_hook_remove(handle) == 0);
 
-		if ((cb_handle = fsh_callback_install(&cb)) != -1)
-			VERIFY(fsh_callback_remove(cb_handle) == 0);
-		
+		cb.fshc_arg = kmem_alloc(sizeof (int), KM_SLEEP);
+		cb.fshc_mount = api_callback;
+		cb.fshc_free = api_callback;
+		cb_handle = fsh_callback_install(&cb);
+
+		*(int *)cb.fshc_arg = 0;
 		fsh_exec_mount_callbacks(vfsp);
+		*(int *)cb.fshc_arg = 0;
 		fsh_exec_free_callbacks(vfsp);
+
+		if (cb_handle != -1)
+			VERIFY(fsh_callback_remove(cb_handle) == 0);
+		kmem_free(cb.fshc_arg, sizeof (int));
 
 		/*
 		 * fsh_fsrec_destroy() is called inside vfs_free()
@@ -173,11 +218,19 @@ post_hook(void *arg1, void *instancep)
 		if ((handle = fsh_hook_install(vfsp, &hook)) != -1)
 			VERIFY(fsh_hook_remove(handle) == 0);
 
-		if ((cb_handle = fsh_callback_install(&cb)) != -1)
-			VERIFY(fsh_callback_remove(cb_handle) == 0);
+		cb.fshc_arg = kmem_alloc(sizeof (int), KM_SLEEP);
+		cb.fshc_mount = api_callback;
+		cb.fshc_free = api_callback;
+		cb_handle = fsh_callback_install(&cb);
 
+		*(int *)cb.fshc_arg = 0;
 		fsh_exec_mount_callbacks(vfsp);
+		*(int *)cb.fshc_arg = 0;
 		fsh_exec_free_callbacks(vfsp);
+
+		if (cb_handle != -1)
+			VERIFY(fsh_callback_remove(cb_handle) == 0);
+		kmem_free(cb.fshc_arg, sizeof (int));
 
 		/*
 		 * fsh_fsrec_destroy() is called inside vfs_free()
@@ -308,11 +361,19 @@ fsht_remove_cb(void *arg1, fsh_handle_t handle)
 		if ((handle = fsh_hook_install(vfsp, &hook)) != -1)
 			VERIFY(fsh_hook_remove(handle) == 0);
 
-		if ((cb_handle = fsh_callback_install(&cb)) != -1)
-			VERIFY(fsh_callback_remove(cb_handle) == 0);
+		cb.fshc_arg = kmem_alloc(sizeof (int), KM_SLEEP);
+		cb.fshc_mount = api_callback;
+		cb.fshc_free = api_callback;
+		cb_handle = fsh_callback_install(&cb);
 
+		*(int *)cb.fshc_arg = 0;
 		fsh_exec_mount_callbacks(vfsp);
+		*(int *)cb.fshc_arg = 0;
 		fsh_exec_free_callbacks(vfsp);
+
+		if (cb_handle != -1)
+			VERIFY(fsh_callback_remove(cb_handle) == 0);
+		kmem_free(cb.fshc_arg, sizeof (int));
 
 		/*
 		 * fsh_fsrec_destroy() is called inside vfs_free()
@@ -355,6 +416,20 @@ fsht_remove_cb(void *arg1, fsh_handle_t handle)
 			cv_signal(&fsht_hooks_empty);
 		mutex_exit(&fsht_lock);
 	}
+}
+
+/*ARGSUSED*/
+static void
+fsht_callback_mount(vfs_t *vfsp, void *arg)
+{
+	/* Dummy */
+}
+
+/*ARGSUSED*/
+static void
+fsht_callback_free(vfs_t *vfsp, void *arg)
+{
+	/* Dummy */
 }
 
 static int
@@ -450,6 +525,9 @@ fsht_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	    offsetof(fsht_int_t, fshti_node));
 	cv_init(&fsht_hooks_empty, NULL, CV_DRIVER, NULL);
 
+	list_create(&fsht_cbs, sizeof (fsht_cb_int_t),
+	    offsetof(fsht_cb_int_t, fshtcbi_node));
+
 	fsht_owner = NULL;
 	mutex_init(&fsht_owner_lock, NULL, MUTEX_DRIVER, NULL);
 
@@ -461,6 +539,7 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 {
 	int enabled;
 	fsht_int_t *fshti;
+	fsht_cb_int_t *cbi;
 
 	if (cmd != DDI_DETACH)
 		return (DDI_FAILURE);
@@ -496,17 +575,22 @@ fsht_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	VERIFY(fsht_owner == curthread);
 	fsht_owner = NULL;
 	mutex_exit(&fsht_owner_lock);
-	
+
 	/* Some hooks might still be running. */
 	while (fsht_hooks_count > 0)
 		cv_wait(&fsht_hooks_empty, &fsht_lock);
 
 	mutex_exit(&fsht_lock);
 
-
 	VERIFY(list_is_empty(&fsht_hooks));
 	list_destroy(&fsht_hooks);
-	
+
+	while ((cbi = list_remove_head(&fsht_cbs)) != NULL) {
+		(void) fsh_callback_remove(cbi->fshtcbi_handle);
+		kmem_free(cbi, sizeof (*cbi));
+	}
+	list_destroy(&fsht_cbs);
+
 	mutex_destroy(&fsht_owner_lock);
 	cv_destroy(&fsht_hooks_empty);
 	mutex_destroy(&fsht_lock);
@@ -627,13 +711,68 @@ fsht_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
 		return (0);
 	}
 
-	case FSHT_CB_INSTALL:
-		/* TODO */
-		return (ENOTTY);
+	case FSHT_CB_INSTALL: {
+		fsht_cb_ioc_t io;
+		fsh_callback_t cb = { 0 };
+		fsht_cb_int_t *cbi;
 
-	case FSHT_CB_REMOVE:
-		/* TODO */
-		return (ENOTTY);
+		if (ddi_copyin((void *)arg, &io, sizeof (io), mode))
+			return (EFAULT);
+
+		cbi = kmem_zalloc(sizeof (*cbi), KM_SLEEP);
+		cbi->fshtcbi_arg = io.install.fshtcbio_arg;
+
+		cb.fshc_arg = cbi;
+		cb.fshc_free = fsht_callback_free;
+		cb.fshc_mount = fsht_callback_mount;
+
+		cbi->fshtcbi_handle = fsh_callback_install(&cb);
+		if (cbi->fshtcbi_handle == -1) {
+			kmem_free(cbi, sizeof (*cbi));
+			*rvalp = EAGAIN;
+			return (0);
+		}
+
+		mutex_enter(&fsht_lock);
+		list_insert_head(&fsht_cbs, cbi);
+		mutex_exit(&fsht_lock);
+
+		io.out.fshtcbio_handle = cbi->fshtcbi_handle;
+		if (ddi_copyout(&io, (void *)arg, sizeof (io), mode))
+			return (EFAULT);
+
+		*rvalp = 0;
+		return (0);
+	}
+
+	case FSHT_CB_REMOVE: {
+		fsht_cb_ioc_t io;
+		fsht_cb_int_t *cbi;
+
+		if (ddi_copyin((void *)arg, &io, sizeof (io), mode))
+			return (EFAULT);
+
+		mutex_enter(&fsht_lock);
+		for (cbi = list_head(&fsht_cbs); cbi != NULL;
+		    cbi = list_next(&fsht_cbs, cbi)) {
+			if (cbi->fshtcbi_handle == io.remove.fshtcbio_handle) {
+				list_remove(&fsht_cbs, cbi);
+				break;
+			}
+		}
+		mutex_exit(&fsht_lock);
+
+		if (cbi == NULL) {
+			*rvalp = ENOENT;
+			return (0);
+		}
+
+		(void) fsh_callback_remove(cbi->fshtcbi_handle);
+		kmem_free(cbi, sizeof (*cbi));
+
+		*rvalp = 0;
+		return (0);
+	}
 
 	default:
 		return (ENOTTY);

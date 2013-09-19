@@ -13,6 +13,7 @@
  * Copyright 2013 Damian Bogel.  All rights reserved.
  */
 
+/*LINTLIBRARY*/
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/fshtest.h>
@@ -65,19 +66,22 @@ fsht_hook_install(int fd, char *mnt, int type, int arg)
 		ioc.install.fshthio_arg = arg;
 		/*FALLTHROUGH*/
 	case FSHTT_PREPOST:
-		/*FALL THROUGH*/
+		/*FALLTHROUGH*/
 	case FSHTT_API:
-		/*FALL THROUGH*/
+		/*FALLTHROUGH*/
 	case FSHTT_AFTER_REMOVE:
-		/*FALL THROUGH*/
+		/*FALLTHROUGH*/
 	case FSHTT_SELF_DESTROY:
 		if ((mntfd = open(mnt, O_RDONLY)) == -1)
 			return (-2);
-		ioc.install.fshthio_fd = mntfd;	
+		ioc.install.fshthio_fd = mntfd;
 
 		ioc.install.fshthio_type = type;
-		ret = ioctl(fd, FSHT_HOOK_INSTALL, &ioc);
-		ret = ioc.out.fshthio_handle;
+		/* TODO: ??? */
+		if (ioctl(fd, FSHT_HOOK_INSTALL, &ioc) != 0)
+			ret = -1;
+		else
+			ret = ioc.out.fshthio_handle;
 		(void) close(mntfd);
 		break;
 
@@ -95,4 +99,28 @@ fsht_hook_remove(int fd, int64_t handle)
 	fsht_hook_ioc_t ioc;
 	ioc.remove.fshthio_handle = handle;
 	return (ioctl(fd, FSHT_HOOK_REMOVE, &ioc));
+}
+
+int64_t
+fsht_callback_install(int fd, int arg)
+{
+	fsht_cb_ioc_t ioc;
+	int ret;
+
+	ioc.install.fshtcbio_arg = arg;
+	ret = ioctl(fd, FSHT_CB_INSTALL, &ioc);
+
+	if (ret != 0)
+		return (-1);
+
+	return (ioc.out.fshtcbio_handle);
+}
+
+int
+fsht_callback_remove(int fd, int64_t handle)
+{
+	fsht_cb_ioc_t ioc;
+
+	ioc.remove.fshtcbio_handle = handle;
+	return (ioctl(fd, FSHT_CB_REMOVE, &ioc));
 }

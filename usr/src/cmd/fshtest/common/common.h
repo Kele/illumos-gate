@@ -35,6 +35,9 @@ int fsht_disable(int fd);
 int64_t fsht_hook_install(int fd, char *mnt, int type, int arg);
 int fsht_hook_remove(int fd, int64_t handle);
 
+int64_t fsht_callback_install(int fd, int arg);
+int fsht_callback_remove(int fd, int64_t handle);
+
 #ifdef __cplusplus
 }
 #endif

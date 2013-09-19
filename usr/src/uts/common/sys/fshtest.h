@@ -37,8 +37,8 @@ extern "C" {
 #define	FSHT_IOC		(('f' | 's') << 24 | 'h' << 16 | 't' << 8)
 #define	FSHT_HOOK_INSTALL	(FSHT_IOC | 1)
 #define	FSHT_HOOK_REMOVE	(FSHT_IOC | 2)
-#define	FSHT_CB_INSTALL		(FSHT_IOC | 3)	/* TODO */
-#define	FSHT_CB_REMOVE		(FSHT_IOC | 4)	/* TODO */
+#define	FSHT_CB_INSTALL		(FSHT_IOC | 3)
+#define	FSHT_CB_REMOVE		(FSHT_IOC | 4)
 #define	FSHT_ENABLE		(FSHT_IOC | 5)
 #define	FSHT_DISABLE		(FSHT_IOC | 6)
 
@@ -59,13 +59,19 @@ typedef union fsht_hook_ioc {
 	struct {
 		int64_t fshthio_handle;
 		int64_t _padding[3];
-	} out;
+	} out, remove;
+} fsht_hook_ioc_t;
+
+
+typedef union fsht_cb_ioc {
+	struct {
+		int64_t fshtcbio_arg;
+	} install;
 
 	struct {
-		int64_t fshthio_handle;
-		int64_t _padding[3];
-	} remove;
-} fsht_hook_ioc_t;
+		int64_t	fshtcbio_handle;
+	} out, remove;
+} fsht_cb_ioc_t;
 
 #ifdef __cplusplus
 }

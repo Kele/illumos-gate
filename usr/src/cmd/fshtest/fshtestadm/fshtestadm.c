@@ -50,7 +50,7 @@ static int arg;
 const char *
 xlate_type(int type)
 {
-	switch(type) {
+	switch (type) {
 	case FSHTT_DUMMY:
 		return ("FSHTT_DUMMY");
 	case FSHTT_PREPOST:
@@ -74,7 +74,7 @@ hook_install(char *path, int type)
 
 	if (installed_hooks_count + 1 >= MAXHOOKS)
 		return (-1);
-	
+
 	if (type == FSHTT_DUMMY) {
 		real_arg = arg++;
 	} else if (type == FSHTT_API) {
@@ -133,8 +133,11 @@ hook_remove(int64_t handle, int pos, int cb)
 	else if (cb) {
 		(void) printf("fsht_remove_cb(%lld)\n", handle);
 		if (installed_hooks[pos].type == FSHTT_API) {
-			(void) printf("fsh_hook_install(EMPTY)\n");
-			(void) printf("fsh_hook_remove(EMPTY)\n");
+			int j;
+			for (j = 0; j < 23; j++) {
+				(void) printf("fsh_hook_install(EMPTY)\n");
+				(void) printf("fsh_hook_remove(EMPTY)\n");
+			}
 		}
 	}
 
@@ -156,24 +159,26 @@ rand_dummy_remove()
 {
 	int pos;
 	pos = rand() % installed_hooks_count;
-	
-	hook_remove(-1, pos, 1);	
+
+	hook_remove(-1, pos, 1);
 }
 
 void
 print_hooks(const char *funcname)
 {
-	int i;
+	int i, j;
 	for (i = installed_hooks_count - 1; i >= 0; i--) {
 		(void) printf("pre %s:\thandle = %lld\n",
 		    funcname, installed_hooks[i].handle);
 
 		switch (installed_hooks[i].type) {
 		case FSHTT_API:
-			(void) printf("fsh_hook_install(EMPTY)\n");
-			(void) printf("fsh_hook_remove(EMPTY)\n");
+			for (j = 0; j < 23; j++) {
+				(void) printf("fsh_hook_install(EMPTY)\n");
+				(void) printf("fsh_hook_remove(EMPTY)\n");
+			}
 			break;
-		
+
 		case FSHTT_SELF_DESTROY:
 			(void) printf("fsh_hook_remove(%lld)\n",
 			    installed_hooks[i].handle);
@@ -190,10 +195,12 @@ print_hooks(const char *funcname)
 
 		switch (installed_hooks[i].type) {
 		case FSHTT_API:
-			(void) printf("fsh_hook_install(EMPTY)\n");
-			(void) printf("fsh_hook_remove(EMPTY)\n");
+			for (j = 0; j < 23; j++) {
+				(void) printf("fsh_hook_install(EMPTY)\n");
+				(void) printf("fsh_hook_remove(EMPTY)\n");
+			}
 			break;
-		
+
 		case FSHTT_SELF_DESTROY:
 			break;
 
@@ -220,7 +227,7 @@ run_read(const char *path)
 		perror("Error");
 		return;
 	}
-	
+
 	(void) read(fd, buf, 100);
 	print_hooks("read");
 
@@ -234,7 +241,7 @@ diagnose()
 	int64_t handles[4];
 	int types[4] = { FSHTT_PREPOST, FSHTT_API, FSHTT_AFTER_REMOVE,
 	    FSHTT_SELF_DESTROY };
-	
+
 	for (i = 0; i < 4; i++) {
 		handles[i] = hook_install(paths[0], types[i]);
 
@@ -243,9 +250,9 @@ diagnose()
 			    xlate_type(types[i]));
 		}
 	}
-	
+
 	run_read(paths[0]);
-	
+
 	/* FSHTT_SELF_DESTROY is already removed */
 	for (i = 0; i < 4; i++) {
 		if (handles[i] > 0)
@@ -259,7 +266,7 @@ diagnose()
 void
 run_test(int iterations)
 {
-	int i, op;
+	int i;
 
 	arg = 0;
 
@@ -267,7 +274,7 @@ run_test(int iterations)
 
 	for (i = 0; i < iterations; i++) {
 		(void) usleep(1000);	/* So that DTrace could follow. */
-		switch (op = rand() % 3) {
+		switch (rand() % 3) {
 		case 0:
 			rand_dummy_install();
 			break;
@@ -312,7 +319,7 @@ main(int argc, char *argv[])
 		    "\n\n");
 		return (-1);
 	}
-	
+
 	/* Read args */
 	tests = atoi(argv[1]);
 	iterations = atoi(argv[2]);
