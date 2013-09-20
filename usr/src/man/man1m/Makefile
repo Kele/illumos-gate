@@ -148,6 +148,7 @@ COMMON_MANFILES = 	6to4relay.1m		\
 	 	 	fsck_pcfs.1m		\
 	 	 	fsck_udfs.1m		\
 	 	 	fsck_ufs.1m		\
+			fsdadm.1m		\
 	 	 	fsdb.1m			\
 	 	 	fsdb_udfs.1m		\
 	 	 	fsdb_ufs.1m		\

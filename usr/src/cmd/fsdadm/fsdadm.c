@@ -95,22 +95,17 @@ list()
 	free(fslistp);
 }
 
-int aflag;
-int cflag;
+int lflag;
 int dflag;
 int eflag;
 int gflag;
 int iflag;
-int lflag;
 int mflag;
 int oflag;
-int rflag;
 int xflag;
 
 char *mnt;
 fsd_t param;
-int chance;
-int range[2];
 
 int
 main(int argc, char *argv[])
@@ -119,14 +114,12 @@ main(int argc, char *argv[])
 	extern int optind;
 	int opt;
 
-	if (argc < 2)
-		goto usage;
-
-	if (fsd_open(&handle) != 0)
-		return (errout(&handle));
-
-	while ((opt = getopt(argc, argv, "ediam:gxoc:r:l")) != -1) {
+	while ((opt = getopt(argc, argv, "hedi:lm:gxo")) != -1) {
 		switch (opt) {
+		case 'h':
+			goto usage;
+			break;
+
 		case 'e':
 			eflag = 1;
 			break;
@@ -135,12 +128,39 @@ main(int argc, char *argv[])
 			dflag = 1;
 			break;
 
-		case 'i':
-			iflag = 1;
-			break;
+		case 'i': {
+			char *type;
 
-		case 'a':
-			aflag = 1;
+			iflag = 1;
+
+			type = argv[optind-1];
+			if (strcmp(type, "readless") == 0) {
+				if (optind + 2 >= argc) {
+					(void) fprintf(stderr,
+					    "Error: \"readless\" requires "
+					    " three parameters.\n");
+					ret = -1;
+					goto end;
+				}
+
+				param.read_less_chance = atoi(argv[optind]);
+				param.read_less_r[0] = atoi(argv[optind+1]);
+				param.read_less_r[1] = atoi(argv[optind+2]);
+
+				optind = optind + 3;
+
+			} else {
+				(void) fprintf(stderr,
+				    "Error: Invalid disturber type.\n");
+				ret = -1;
+				goto end;
+			}
+
+			break;
+		}
+
+		case 'l':
+			lflag = 1;
 			break;
 
 		case 'm':
@@ -160,35 +180,14 @@ main(int argc, char *argv[])
 			oflag = 1;
 			break;
 
-		case 'c':
-			cflag = 1;
-			chance = atoi(optarg);
-			break;
-
-		case 'r':
-			rflag = 1;
-			if (optind > argc - 1) {
-				(void) fprintf(stderr,
-				    "Error: -r requires two arguments\n");
-				ret = -1;
-				goto end;
-			}
-			range[0] = atoi(argv[optind-1]);
-			range[1] = atoi(argv[optind]);
-			optind++;
-			break;
-
-		case 'l':
-			lflag = 1;
-			break;
-
 		case '?':
-			(void) fprintf(stderr,
-			    "Error: Unrecognized option: -%c\n", optopt);
 			ret = -1;
 			goto end;
 		}
 	}
+
+	if (fsd_open(&handle) != 0)
+		return (errout(&handle));
 
 	if (eflag) {
 		if (fsd_enable(&handle) != 0)
@@ -198,10 +197,7 @@ main(int argc, char *argv[])
 		if (fsd_disable(&handle) != 0)
 			ret = errout(&handle);
 
-	} else if (iflag) {
-		info();
-
-	} else if (aflag) {
+	} else if (lflag) {
 		list();
 
 	} else if (xflag) {
@@ -228,18 +224,10 @@ main(int argc, char *argv[])
 			}
 		} else {
 			(void) fprintf(stderr, "Don't know what to get. "
-			    "Use -m PATH with -g option.\n");
+			    "Use -m mountpoint with -g option.\n");
 		}
 
-	} else if (lflag) {	/* add other disturbances here */
-		if (!(cflag && rflag)) {
-			(void) fprintf(stderr, "Need chance and range.\n");
-			goto end;
-		}
-
-		param.read_less_chance = chance;
-		param.read_less_r[0] = range[0];
-		param.read_less_r[1] = range[1];
+	} else if (iflag) {	/* add other disturbances here */
 
 		if (oflag) {
 			if (fsd_disturb_omni(&handle, &param) != 0)
@@ -252,35 +240,25 @@ main(int argc, char *argv[])
 		} else {
 			(void) fprintf(stderr,
 			    "Don't know what to disturb. "
-			    "Use -o or -m PATH with this options.\n");
+			    "Use -o or -m mountpoint with this option.\n");
 		}
 
 	} else {
-usage:
-		(void) fprintf(stderr, "Usage: fsdadm "
-		    "[-ed] [-ai] [-o] [-x] [-g] [-l] "
-		    "[-r range_start range_end]\n"
-		    "\t[-c chance] [-m path]\n\n");
-
-		(void) fprintf(stderr,
-		    "\t -e enable fsd\n"
-		    "\t -d disable fsd\n"
-		    "\t -a display disturbance parameters for all disturbed\n"
-		    "\t    filesystems\n"
-		    "\t -i display information about current fsd status\n"
-		    "\t -o omnipresent switch\n"
-		    "\t -x clear switch\n"
-		    "\t -g get disturbance parameters\n"
-		    "\t -l \"read less\" disturbance\n"
-		    "\t    every read operation would read n (from a given\n"
-		    "\t    range) bytes less than it was requested\n"
-		    "\t -r range for some types of disturbances\n"
-		    "\t -c chance of the disturbance\n"
-		    "\t -m path to mountpoint (or a representative file)\n"
-		    "\n");
+		info();
 	}
 
 end:
 	fsd_close(&handle);
+	return (ret);
+
+usage:
+	(void) fprintf(stderr, "Usage:\n"
+	    "\tfsdadm\n"
+	    "\tfsdadm -e | -d\n"
+	    "\tfsdadm -l\n"
+	    "\tfsdadm [-m mountpoint | -o] [-x | -g]\n"
+	    "\tfsdadm [-m mountpoint | -o] [-i type [params ...]] ...\n"
+	    "\tfsdadm -h\n\n");
+
 	return (ret);
 }

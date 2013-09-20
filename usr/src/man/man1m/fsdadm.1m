@@ -1,0 +1,246 @@
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" http://www.illumos.org/license/CDDL.
+.\"
+.\"
+.\" Copyright 2013 Damian Bogel.  All rights reserved.
+.\"
+.\" generated with Ronn/v0.7.3
+.\" http://github.com/rtomayko/ronn/tree/0.7.3
+.
+.TH "FSDADM" "1m" "September 2013" "" ""
+.
+.SH "NAME"
+\fBfsdadm\fR \- utility used to administer the filesystem disturber
+.
+.SH "SYNOPSIS"
+\fBfsdadm\fR
+.
+.P
+\fBfsdadm\fR \fB\-e\fR | \fB\-d\fR
+.
+.P
+\fBfsdadm\fR \fB\-l\fR
+.
+.P
+\fBfsdadm\fR [\fB\-m\fR \fImountpoint\fR | \fB\-o\fR] [\fB\-x\fR | \fB\-g\fR]
+.
+.P
+\fBfsdadm\fR [\fB\-m\fR \fImountpoint\fR | \fB\-o\fR] [\fB\-i\fR \fItype\fR [\fIparams\fR \.\.\.]] \.\.\.
+.
+.P
+\fBfsdadm\fR \fB\-h\fR
+.
+.SH "IMPORTANT NOTE"
+This is a \fBprototype\fR, which means that some of the options could be deprecated soon\. The most important thing about the current version of \fBfsdadm\fR is that the \fImountpoint\fR passed with \fB\-m\fR option does \fBNOT\fR really have to be a mountpoint\. This only has to be a representative file within the filesystem\.
+.
+.TP
+\fBExample\fR disturbing / instead of /rpool/fs1
+\fB# umount /rpool/fs1\fR
+.
+.br
+\fB# fsdadm \-m /rpool/fs1 \-i readless 100 1 2\fR
+.
+.SH "DESCRIPTION"
+The \fBfsdadm\fR utility is used to administer \fBthe filesystem disturber (fsd)\fR\. \fBfsd\fR is a system component used to inject pathological behaviour into filesystem calls\.
+.
+.P
+\fBDisturber\fR is a hook that makes specific filesystem calls do \fIinfrequent\fR actions\. All the perturbations are well documented and should be both expected and handled\. A good example is \fBread(2)\fR reading less bytes than it was asked for\. It is wrong to ignore the return value and expect that it was a full success\. Unfortunately, this errors happens sometimes and due to a rather low chance of meeting this behaviour it is hard to diagnose this while testing\. A disturber makes this happen however frequent we want\.
+.
+.P
+\fBOmnipresent disturber\fR is a disturber installed whenever a new filesystem is mounted\.
+.
+.P
+There can be \fBonly one\fR disturber installed per filesystem\. This means that whenever the user installs a disturber, the previous one is cleared\.
+.
+.SH "OPTIONS"
+\fBfsdadm\fR executed with no options provided displays information about the fsd including:
+.
+.IP "\(bu" 4
+is fsd enabled?
+.
+.IP "\(bu" 4
+how many disturbers are installed?
+.
+.IP "\(bu" 4
+is omnipresent disturber active, and if so, what are it\'s parameters?
+.
+.IP "" 0
+.
+.P
+Following options are supported:
+.
+.P
+\fB\-h\fR
+.
+.IP "" 4
+.
+.nf
+
+Displays help\.
+.
+.fi
+.
+.IP "" 0
+.
+.P
+\fB\-e\fR
+.
+.IP "" 4
+.
+.nf
+
+Enable the filesystem disturber\. It prevents fsd from being
+unloaded from the system\.
+.
+.fi
+.
+.IP "" 0
+.
+.P
+\fB\-d\fR
+.
+.IP "" 4
+.
+.nf
+
+Disable the filesystem disturber\. It does not remove installed
+disturbers, but makes them inactive\. Omnipresent disturbers is not
+installed when a filesystem is being mounted\. When fsd is disabled, it
+can be unloaded from the system\. All unremoved disturbers are
+removed then\.
+.
+.fi
+.
+.IP "" 0
+.
+.P
+\fB\-l\fR
+.
+.IP "" 4
+.
+.nf
+
+Display a list of installed disturbers\.
+.
+.fi
+.
+.IP "" 0
+.
+.P
+\fB\-m\fR \fImountpoint\fR
+.
+.IP "" 4
+.
+.nf
+
+Apply operation on the \fImountpoint\fR\.
+.
+.fi
+.
+.IP "" 0
+.
+.P
+\fB\-o\fR
+.
+.IP "" 4
+.
+.nf
+
+Apply operation on the omnipresent disturber\.
+.
+.fi
+.
+.IP "" 0
+.
+.P
+\fB\-x\fR
+.
+.IP "" 4
+.
+.nf
+
+Clear the disturber\.
+.
+.fi
+.
+.IP "" 0
+.
+.P
+\fB\-g\fR
+.
+.IP "" 4
+.
+.nf
+
+Get information about the disturber\.
+.
+.fi
+.
+.IP "" 0
+.
+.P
+\fB\-i\fR \fItype\fR [\fIparams\fR \.\.\.]
+.
+.IP "" 4
+.
+.nf
+
+Sets a disturber\. Supported disturber types are:
+
+\fBreadless\fR \fIchance\fR \fIr1\fR \fIr2\fR
+    \fBread(2)\fR (and other similar) call reads from \fIr1\fR to \fIr2\fR
+    bytes less than it was asked for with \fIchance\fR percent
+    probability\.  The number of bytes read will not drop to 0\.
+.
+.fi
+.
+.IP "" 0
+.
+.SH "EXAMPLES"
+.
+.TP
+\fBExample 1\fR using the \fB\-m\fR option
+\fB# fsdadm \-m /rpool/fs1 \-i readless 50 1 2\fR
+.
+.IP
+Installs a disturber which causes \fBread(2)\fR to read from 1 to 2 bytes less with a 50% chance, on /rpool/fs1 filesystem\.
+.
+.TP
+\fBExample 2\fR using the \fB\-x\fR option
+\fB# fsdadm \-m /rpool/fs1 \-x\fR
+.
+.IP
+Clears the disturbers on /rpool/fs1 filesystem\.
+.
+.TP
+\fBExample 3\fR using the \fB\-o\fR option
+\fB# fsdadm \-o \-i readless 10 5 10\fR
+.
+.IP
+Installs an omnipresent disturber which causes \fBread(2)\fR to read from 5 to 10 bytes less with a 10% chance\.
+.
+.SH "RETURN VALUES"
+.
+.IP "\(bu" 4
+\fB0\fR on success
+.
+.IP "\(bu" 4
+\fBnonzero\fR otherwise
+.
+.IP "" 0
+.
+.SH "SEE ALSO"
+.
+.nf
+
+\fBread(2)\fR, \fBlibfsd(3)\fR
+.
+.fi
+
