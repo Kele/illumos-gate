@@ -181,7 +181,7 @@ static int
 ioctl_set_handle(fsd_handle_t *handle, int ioctlret)
 {
 	handle->fsd_errno = xlate_errno(ioctlret);
-	handle->errno = 0;
+	handle->_errno = 0;
 
 	if (handle->fsd_errno == 0)
 		return (0);
@@ -194,7 +194,7 @@ fsd_open(fsd_handle_t *handle)
 {
 	if ((handle->fd = open(FSD_DEV_PATH, O_RDWR)) == -1) {
 		handle->fsd_errno = EFSD_CANT_OPEN_DRIVER;
-		handle->errno = errno;
+		handle->_errno = errno;
 		return (-1);
 	}
 	return (0);
@@ -232,7 +232,7 @@ fsd_disturb(fsd_handle_t *handle, const char *mnt_path, fsd_t *param)
 
 	if ((ioc.fsdioc_dis.fsdd_mnt = open(mnt_path, O_RDONLY)) == -1) {
 		handle->fsd_errno = EFSD_CANT_OPEN_MOUNTPOINT;
-		handle->errno = errno;
+		handle->_errno = errno;
 		return (-1);
 	}
 
@@ -249,7 +249,7 @@ fsd_disturb_off(fsd_handle_t *handle, const char *mnt_path)
 
 	if ((ioc.fsdioc_mnt = open(mnt_path, O_RDONLY)) == -1) {
 		handle->fsd_errno = EFSD_CANT_OPEN_MOUNTPOINT;
-		handle->errno = errno;
+		handle->_errno = errno;
 		return (-1);
 	}
 
@@ -285,7 +285,7 @@ fsd_get_param(fsd_handle_t *handle, const char *mnt_path, fsd_t *param)
 
 	if ((ioc.fsdioc_mnt = open(mnt_path, O_RDONLY)) == -1) {
 		handle->fsd_errno = EFSD_CANT_OPEN_MOUNTPOINT;
-		handle->errno = errno;
+		handle->_errno = errno;
 		return (-1);
 	}
 	mntfd = ioc.fsdioc_mnt;

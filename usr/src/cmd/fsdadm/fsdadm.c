@@ -26,7 +26,7 @@ int
 errout(fsd_handle_t *handle)
 {
 	(void) fprintf(stderr, "Error: %s: %s\n",
-	    fsd_strerr(handle->fsd_errno), strerror(handle->errno));
+	    fsd_strerr(handle->fsd_errno), strerror(handle->_errno));
 
 	return (-1);
 }

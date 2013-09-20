@@ -25,7 +25,7 @@ extern "C" {
 typedef struct fsd_handle {
 	int fd;
 	int fsd_errno;
-	int errno;
+	int _errno;
 } fsd_handle_t;
 
 #define	EFSD_NOERROR			0
