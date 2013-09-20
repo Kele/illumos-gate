@@ -51,7 +51,7 @@
  *
  * 2. Features
  * * per-vfs injections
- * * injection installing on every newly mounted vfs (that's called an
+ * * injection installing on every newly mounted vfs (that's called: the
  *   omnipresent disturber)
  *
  * 3. Usage
@@ -77,7 +77,9 @@
  *
  * FSD_DISABLE:
  *	ioctl(fd, FSD_DISABLE);
- *	Disables the fsd.
+ *	Disables the fsd. Installed disturbers have no effect. Omnipresent
+ *	disturber is not installed when a new vfs_t is mounted. The driver
+ *	can be detached.
  *
  * FSD_GET_PARAM:
  *	ioctl(fd, FSD_GET_PARAM, ioc);
@@ -91,6 +93,7 @@
  *	ioctl(fd, FSD_DISTURB, ioc);
  *	Installs a disturber on a given filesystem. If a disturber is already
  *	installed on this filesystem, it overwrites it. ioc is fsdioc_dis.
+ *	Works only if fsd is enabled.
  *	Errors:
  *		EAGAIN - hook limit exceeded
  *		EBADFD - cannot open the file descriptor
@@ -108,6 +111,7 @@
  *	Install an omnipresent disturber. It means that whenever a new vfs_t is
  *	being created, this disturber is installed on it. If an omnipresent
  *	disturber is already installed, it overwrites it. ioc is fsdioc_param
+ *	Works only if fsd is enabled.
  *	Errors:
  *		EINVAL - parameters are invalid
  *
@@ -135,12 +139,10 @@
  * in order not to destroy each other efforts in installing disturbers.
  *
  * 4. Internals
- * When fsd_enabled is nonzero, fsd_detach() fails.
- *
  * These mount callback is used for installing injections on newly mounted
  * vfs_t's (omnipresent). The free callback is used for cleaning up.
  *
- * The list of currently installed hooks is kept in fsd_list.
+ * The list of currently installed hooks is kept in fsd_hooks.
  *
  * fsd installs at most one hook on a vfs_t.
  *
@@ -151,12 +153,12 @@
  * That's why fsd_detaching flag is introduced.
  *
  * 5. Locking
- * Every modification of fsd_enable, fsd_hooks, fsd_omni_param and fsd_list is
+ * Every modification of fsd_enable, fsd_hooks, fsd_omni_param and fsd_hooks is
  * protected by fsd_lock.
  *
- * Hooks use only the elements of fsd_list, nothing else. Before an element of
- * fsd_list is destroyed, a hook which uses it is removed. Elements from
- * fsd_lists are removed and destroyed in the hook remove callback
+ * Hooks use only the elements of fsd_hooks, nothing else. Before an element of
+ * fsd_hooks is destroyed, a hook which uses it is removed. Elements from
+ * fsd_hookss are removed and destroyed in the hook remove callback
  * (fsd_remove_cb).
  *
  * Because of the fact that fsd_remove_cb() could be called both in the context
@@ -182,13 +184,14 @@ typedef struct fsd_int {
 	vfs_t		*fsdi_vfsp;
 	int		fsdi_doomed;
 	list_node_t	fsdi_node;
+	int		fsdi_enabled;
 } fsd_int_t;
 
 static dev_info_t *fsd_devi;
 
 
 /*
- * fsd_lock protects: fsd_enabled, fsd_omni_param, fsd_list, fsd_cb_handle,
+ * fsd_lock protects: fsd_enabled, fsd_omni_param, fsd_hooks, fsd_cb_handle,
  * fsd_detaching
  */
 static kmutex_t fsd_lock;
@@ -205,8 +208,8 @@ static int fsd_detaching;
  * List of fsd_int_t. For every vfs_t on which fsd has installed a set of hooks
  * there exist exactly one fsd_int_t with fsdi_vfsp pointing to this vfs_t.
  */
-static list_t fsd_list;
-static int fsd_list_count;
+static list_t fsd_hooks;
+static int fsd_hooks_count;
 static kcondvar_t fsd_cv_empty;
 
 
@@ -258,6 +261,11 @@ fsd_hook_pre_read(void *arg, void **instancep, vnode_t **vpp, uio_t **uiopp,
 	ASSERT((*vpp)->v_vfsp == fsdi->fsdi_vfsp);
 
 	rw_enter(&fsdi->fsdi_lock, RW_READER);
+	if (!fsdi->fsdi_enabled) {
+		*instancep = NULL;
+		rw_exit(&fsdi->fsdi_lock);
+		return;
+	}
 	less_chance = fsdi->fsdi_param.read_less_chance;
 	rw_exit(&fsdi->fsdi_lock);
 
@@ -327,15 +335,15 @@ fsd_remove_cb(void *arg, fsh_handle_t handle)
 	ASSERT(MUTEX_HELD(&fsd_lock));
 
 	if (!fsd_detaching)
-		list_remove(&fsd_list, fsdi);
+		list_remove(&fsd_hooks, fsdi);
 
 	rw_destroy(&fsdi->fsdi_lock);
 	kmem_free(fsdi, sizeof (*fsdi));
 
-	fsd_list_count--;
+	fsd_hooks_count--;
 
 	if (!fsd_context) {
-		if (fsd_list_count == 0)
+		if (fsd_hooks_count == 0)
 			cv_signal(&fsd_cv_empty);
 		mutex_exit(&fsd_lock);
 	}
@@ -355,8 +363,8 @@ fsd_disturber_install(vfs_t *vfsp, fsd_t *fsd)
 
 	ASSERT(MUTEX_HELD(&fsd_lock));
 
-	for (fsdi = list_head(&fsd_list); fsdi != NULL;
-	    fsdi = list_next(&fsd_list, fsdi)) {
+	for (fsdi = list_head(&fsd_hooks); fsdi != NULL;
+	    fsdi = list_next(&fsd_hooks, fsdi)) {
 		if (fsdi->fsdi_vfsp == vfsp)
 			break;
 	}
@@ -371,6 +379,11 @@ fsd_disturber_install(vfs_t *vfsp, fsd_t *fsd)
 		fsh_t hook = { 0 };
 
 		fsdi = kmem_zalloc(sizeof (*fsdi), KM_SLEEP);
+		/*
+		 * We set it to 1, since fsd_disturber_install() cannot be
+		 * called when fsd_enabled is 0.
+		 */
+		fsdi->fsdi_enabled = 1;
 		fsdi->fsdi_vfsp = vfsp;
 		(void) memcpy(&fsdi->fsdi_param, fsd,
 		    sizeof (fsdi->fsdi_param));
@@ -383,7 +396,7 @@ fsd_disturber_install(vfs_t *vfsp, fsd_t *fsd)
 
 		/*
 		 * It is safe to do so, because none of the hooks installed
-		 * by fsd uses fsdi_handle nor the fsd_list.
+		 * by fsd uses fsdi_handle nor the fsd_hooks.
 		 */
 		fsdi->fsdi_handle = fsh_hook_install(vfsp, &hook);
 		if (fsdi->fsdi_handle == -1) {
@@ -391,8 +404,8 @@ fsd_disturber_install(vfs_t *vfsp, fsd_t *fsd)
 			rw_destroy(&fsdi->fsdi_lock);
 			return (-1);
 		}
-		list_insert_head(&fsd_list, fsdi);
-		fsd_list_count++;
+		list_insert_head(&fsd_hooks, fsdi);
+		fsd_hooks_count++;
 	}
 	return (0);
 }
@@ -404,8 +417,8 @@ fsd_disturber_remove(vfs_t *vfsp)
 
 	ASSERT(MUTEX_HELD(&fsd_lock));
 
-	for (fsdi = list_head(&fsd_list); fsdi != NULL;
-	    fsdi = list_next(&fsd_list, fsdi)) {
+	for (fsdi = list_head(&fsd_hooks); fsdi != NULL;
+	    fsdi = list_next(&fsd_hooks, fsdi)) {
 		if (fsdi->fsdi_vfsp == vfsp)
 			break;
 	}
@@ -464,8 +477,8 @@ fsd_free_callback(vfs_t *vfsp, void *arg)
 	fsd_int_t *fsdi;
 
 	mutex_enter(&fsd_lock);
-	for (fsdi = list_head(&fsd_list); fsdi != NULL;
-	    fsdi = list_next(&fsd_list, fsdi)) {
+	for (fsdi = list_head(&fsd_hooks); fsdi != NULL;
+	    fsdi = list_next(&fsd_hooks, fsdi)) {
 		if (fsdi->fsdi_vfsp == vfsp) {
 			if (fsdi->fsdi_doomed)
 				continue;
@@ -505,16 +518,32 @@ fsd_free_callback(vfs_t *vfsp, void *arg)
 static void
 fsd_enable()
 {
+	fsd_int_t *fsdi;
+
 	mutex_enter(&fsd_lock);
 	fsd_enabled = 1;
+	for (fsdi = list_head(&fsd_hooks); fsdi != NULL;
+	    fsdi = list_next(&fsd_hooks, fsdi)) {
+		rw_enter(&fsdi->fsdi_lock, RW_WRITER);
+		fsdi->fsdi_enabled = 1;
+		rw_exit(&fsdi->fsdi_lock);
+	}
 	mutex_exit(&fsd_lock);
 }
 
 static void
 fsd_disable()
 {
+	fsd_int_t *fsdi;
+
 	mutex_enter(&fsd_lock);
 	fsd_enabled = 0;
+	for (fsdi = list_head(&fsd_hooks); fsdi != NULL;
+	    fsdi = list_next(&fsd_hooks, fsdi)) {
+		rw_enter(&fsdi->fsdi_lock, RW_WRITER);
+		fsdi->fsdi_enabled = 0;
+		rw_exit(&fsdi->fsdi_lock);
+	}
 	mutex_exit(&fsd_lock);
 }
 
@@ -542,10 +571,10 @@ fsd_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	fsd_rem_thread = NULL;
 	fsd_enabled = 0;
 	fsd_detaching = 0;
-	fsd_list_count = 0;
+	fsd_hooks_count = 0;
 	fsd_omni_param = NULL;
 
-	list_create(&fsd_list, sizeof (fsd_int_t),
+	list_create(&fsd_hooks, sizeof (fsd_int_t),
 	    offsetof(fsd_int_t, fsdi_node));
 
 	fsd_rand_seed = gethrtime();
@@ -560,7 +589,7 @@ fsd_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	fsd_cb_handle = fsh_callback_install(&cb);
 	if (fsd_cb_handle == -1) {
 		/* Cleanup */
-		list_destroy(&fsd_list);
+		list_destroy(&fsd_hooks);
 		cv_destroy(&fsd_cv_empty);
 		mutex_destroy(&fsd_rem_thread_lock);
 		mutex_destroy(&fsd_lock);
@@ -620,7 +649,7 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	mutex_enter(&fsd_lock);
 	/*
 	 * After we set fsd_detaching to 1, hook remove callback (fsd_remove_cb)
-	 * won't try to remove entries from fsd_list.
+	 * won't try to remove entries from fsd_hooks.
 	 */
 	fsd_detaching = 1;
 
@@ -629,7 +658,7 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	fsd_rem_thread = curthread;
 	mutex_exit(&fsd_rem_thread_lock);
 
-	while ((fsdi = list_remove_head(&fsd_list)) != NULL) {
+	while ((fsdi = list_remove_head(&fsd_hooks)) != NULL) {
 		if (fsdi->fsdi_doomed == 0) {
 			fsdi->fsdi_doomed = 1;
 			/*
@@ -645,7 +674,7 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	fsd_rem_thread = NULL;
 	mutex_exit(&fsd_rem_thread_lock);
 
-	while (fsd_list_count > 0)
+	while (fsd_hooks_count > 0)
 		cv_wait(&fsd_cv_empty, &fsd_lock);
 	mutex_exit(&fsd_lock);
 	cv_destroy(&fsd_cv_empty);
@@ -657,7 +686,7 @@ fsd_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	}
 
 	/* After removing the callback and hooks, it is safe to remove these */
-	list_destroy(&fsd_list);
+	list_destroy(&fsd_hooks);
 	mutex_destroy(&fsd_rem_thread_lock);
 	mutex_destroy(&fsd_lock);
 
@@ -779,8 +808,8 @@ fsd_ioctl_get_param(fsd_ioc_t *ioc, int mode, int *rvalp)
 
 	mutex_enter(&fsd_lock);
 
-	for (fsdi = list_head(&fsd_list); fsdi != NULL;
-	    fsdi = list_next(&fsd_list, fsdi)) {
+	for (fsdi = list_head(&fsd_hooks); fsdi != NULL;
+	    fsdi = list_next(&fsd_hooks, fsdi)) {
 		if (fsdi->fsdi_vfsp == vfsp)
 			break;
 	}
@@ -812,7 +841,7 @@ fsd_ioctl_get_info(fsd_ioc_t *ioc, int mode, int *rvalp)
 
 	mutex_enter(&fsd_lock);
 	info.fsdinf_enabled = fsd_enabled;
-	info.fsdinf_count = fsd_list_count;
+	info.fsdinf_count = fsd_hooks_count;
 	info.fsdinf_omni_on = fsd_omni_param != NULL;
 	if (info.fsdinf_omni_on)
 		(void) memcpy(&info.fsdinf_omni_param, fsd_omni_param,
@@ -847,8 +876,8 @@ fsd_ioctl_get_list(fsd_ioc_t *ioc, int mode, int *rvalp)
 
 
 	mutex_enter(&fsd_lock);
-	if (ioc_list_count > fsd_list_count)
-		ioc_list_count = fsd_list_count;
+	if (ioc_list_count > fsd_hooks_count)
+		ioc_list_count = fsd_hooks_count;
 
 	/* Copyout */
 	if (ddi_copyout(&ioc_list_count, &ioc->fsdioc_list.count,
@@ -856,9 +885,9 @@ fsd_ioctl_get_list(fsd_ioc_t *ioc, int mode, int *rvalp)
 		ret = EFAULT;
 		goto out;
 	}
-	for (fsdi = list_head(&fsd_list), i = 0;
+	for (fsdi = list_head(&fsd_hooks), i = 0;
 	    fsdi != NULL && i < ioc_list_count;
-	    fsdi = list_next(&fsd_list, fsdi), i++) {
+	    fsdi = list_next(&fsd_hooks, fsdi), i++) {
 		refstr_t *mntstr = vfs_getmntpoint(fsdi->fsdi_vfsp);
 		int len = strlen(refstr_value(mntstr));
 
