@@ -23,7 +23,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-
+#include <errno.h>
 
 /*
  * libfsd
@@ -88,7 +88,7 @@
  *	the user-provided count. It just gets the maximal allowed amount of
  *	informaton.
  *
- * fsd_get_param(handle, path, param)
+ * fsd_get_disturber(handle, path, param)
  *	Gets disturber parameters from a filesystem of the file pointed by the
  *	path.
  *
@@ -114,8 +114,6 @@
  * properly share the handle between threads to preserve the consistency of
  * error data within a handle.
  */
-
-extern int errno;
 
 const char *
 fsd_strerr(int e)
@@ -181,7 +179,7 @@ static int
 ioctl_set_handle(fsd_handle_t *handle, int ioctlret)
 {
 	handle->fsd_errno = xlate_errno(ioctlret);
-	handle->errno = 0;
+	handle->_errno = 0;
 
 	if (handle->fsd_errno == 0)
 		return (0);
@@ -194,7 +192,7 @@ fsd_open(fsd_handle_t *handle)
 {
 	if ((handle->fd = open(FSD_DEV_PATH, O_RDWR)) == -1) {
 		handle->fsd_errno = EFSD_CANT_OPEN_DRIVER;
-		handle->errno = errno;
+		handle->_errno = errno;
 		return (-1);
 	}
 	return (0);
@@ -232,7 +230,7 @@ fsd_disturb(fsd_handle_t *handle, const char *mnt_path, fsd_t *param)
 
 	if ((ioc.fsdioc_dis.fsdd_mnt = open(mnt_path, O_RDONLY)) == -1) {
 		handle->fsd_errno = EFSD_CANT_OPEN_MOUNTPOINT;
-		handle->errno = errno;
+		handle->_errno = errno;
 		return (-1);
 	}
 
@@ -249,7 +247,7 @@ fsd_disturb_off(fsd_handle_t *handle, const char *mnt_path)
 
 	if ((ioc.fsdioc_mnt = open(mnt_path, O_RDONLY)) == -1) {
 		handle->fsd_errno = EFSD_CANT_OPEN_MOUNTPOINT;
-		handle->errno = errno;
+		handle->_errno = errno;
 		return (-1);
 	}
 
@@ -277,7 +275,7 @@ fsd_disturb_omni_off(fsd_handle_t *handle)
 }
 
 int
-fsd_get_param(fsd_handle_t *handle, const char *mnt_path, fsd_t *param)
+fsd_get_disturber(fsd_handle_t *handle, const char *mnt_path, fsd_t *param)
 {
 	fsd_ioc_t ioc;
 	int error;
@@ -285,7 +283,7 @@ fsd_get_param(fsd_handle_t *handle, const char *mnt_path, fsd_t *param)
 
 	if ((ioc.fsdioc_mnt = open(mnt_path, O_RDONLY)) == -1) {
 		handle->fsd_errno = EFSD_CANT_OPEN_MOUNTPOINT;
-		handle->errno = errno;
+		handle->_errno = errno;
 		return (-1);
 	}
 	mntfd = ioc.fsdioc_mnt;

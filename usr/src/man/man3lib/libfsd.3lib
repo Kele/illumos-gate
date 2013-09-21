@@ -1,0 +1,217 @@
+'\" te
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" http://www.illumos.org/license/CDDL.
+.\"
+.\"
+.\" Copyright 2013 Damian Bogel.  All rights reserved.
+.\"
+.\" generated with Ronn/v0.7.3
+.\" http://github.com/rtomayko/ronn/tree/0.7.3
+.\"
+.\" TODO: add MT-Level attribute
+.\" TODO: correct formatting
+.
+.TH "LIBFSD" "3lib" "September 2013" "" ""
+.
+.SH "NAME"
+\fBlibfsd\fR \- the filesystem disturber (fsd) library
+.
+.SH "SYNOPSIS"
+cc [ \fIflag\fR\.\.\.] \fIfile\fR\.\.\. \-\fBlfsd\fR [ \fIlibrary\fR\.\.\. ]
+.
+.P
+#include <libfsd\.h>
+.
+.P
+\fBtypedef struct fsd_handle {\fR
+.
+.br
+	\fBint fd;\fR
+.
+.br
+	\fBint fsd_errno;\fR
+.
+.br	
+	\fBint _errno;\fR
+.
+.br
+\fB} fsd_handle_t;\fR
+.
+.P
+\fBconst char\fR *\fBfsd_strerr\fR(\fBint\fR \fIe\fR);
+.
+.P
+\fBint\fR \fBfsd_open\fR(\fBfsd_handle_t\fR *\fIhandle\fR);
+.
+.br
+\fBvoid\fR \fBfsd_close\fR(\fBfsd_handle_t\fR *\fIhandle\fR);
+.
+.P
+\fBint\fR \fBfsd_enable\fR(\fBfsd_handle_t\fR *\fIhandle\fR);
+.
+.br
+\fBint\fR \fBfsd_disable\fR(\fBfsd_handle_t\fR *\fIhandle\fR);
+.
+.P
+\fBint\fR \fBfsd_disturb\fR(\fBfsd_handle_t\fR *\fIhandle\fR, \fBconst char\fR *\fImntpath\fR,
+.
+.br
+	\fBfsd_t\fR *\fIdisturber\fR);
+.
+.br
+\fBint\fR \fBfsd_disturb_off\fR(\fBfsd_handle_t\fR *\fIhandle\fR,
+.
+.br
+	\fBconst char\fR *\fImntpath\fR);
+.
+.P
+\fBint\fR \fBfsd_disturb_omni\fR(\fBfsd_handle_t\fR *\fIhandle\fR,
+.
+.br
+	\fBfsd_t\fR *\fIdisturber\fR);
+.
+.br
+\fBint\fR \fBfsd_disturb_omni_off\fR(\fBfsd_handle_t\fR *\fIhandle\fR);
+.
+.P
+\fBint\fR \fBfsd_get_disturber\fR(\fBfsd_handle_t\fR *\fIhandle\fR,
+.
+.br
+	\fBconst char\fR *\fImntpath\fR, \fBfsd_t\fR *\fIdisturber\fR);
+.
+.br
+\fBint\fR \fBfsd_get_info\fR(\fBfsd_handle_t\fR *\fIhandle\fR, \fBfsd_info_t\fR *\fIinfo\fR);
+.
+.br
+\fBint\fR \fBfsd_get_list\fR(\fBfsd_handle_t\fR *\fIhandle\fR, \fBfsd_fs_t\fR *\fIfslist\fR,
+.
+.br
+	\fBint\fR *\fIcount\fR);
+.
+
+.SH "IMPORTANT NOTE"
+This is a \fBprototype\fR, which means that some of the options could be
+deprecated soon\. The most important thing about the current version of
+\fBlibfsd\fR is that the \fImntpath\fR does \fBNOT\fR really have to be
+a path to the mountpoint\. This only has to be a representative file within the
+filesystem\.
+
+.SH "DESCRIPTION"
+\fBlibfsd\fR is a library used to control the \fBfilesystem disturber\fR\. \fBfsd\fR itself is a driver used to inject pathological behaviour into filesystem calls\.
+.
+.P
+\fBDisturber\fR is a hook (or a set of hooks) that makes specific filesystem
+calls do pathological actions\. All the perturbations are well documented and
+should be both expected and handled\. A good example is \fBread\fR(2) reading
+less bytes than it was asked for\. It is wrong to ignore the return value and
+assume that it was a full success\. This call could have been, for example,
+interrupted by a signal\. Unfortunately, these errors happen sometimes and due
+to a rather low chance of meeting this behaviour it is hard to diagnose this
+while testing\. A disturber makes this happen however frequent we want\.
+.
+.P
+\fBOmnipresent disturber\fR is a disturber installed whenever a new filesystem is mounted\.
+.
+.P
+There can be \fBonly one\fR disturber installed per filesystem\. This means that whenever the user installs a disturber, the previous one is cleared\.
+.
+.P
+The \fBfsd_strerr\fR() function returns an error message for error \fIe\fR\. \fIe\fR is the fsd error number\. It can be retrieved from \fBfsd_errno\fR field of an \fBfsd_handle_t\fR\.
+.
+.P
+The \fBfsd_open\fR() function opens a handle to fsd and returns it\. \fBfsd_close\fR() function closes it\.
+.
+.P
+The \fBfsd_enable\fR() and \fBfsd_disable\fR() functions are used to enable or disable the fsd\. When the fsd is \fBenabled\fR, installed disturbers impact the filesystem calls, new disturbers can be installed and the \fBomnipresent\fR disturber is installed whenever a new filesystem is mounted\. If the fsd is disabled, disturbers do not work and the omnipresent disturber is not installed when a filesystem is mounted\. Also, the fsd driver can be unloaded from the system only when the fsd is disabled\. Disabling the fsd does \fBNOT\fR remove the disturbers\.
+.
+.P
+The \fBfsd_get_disturber\fR() function returns the parameters of a disturber installed on \fImntpath\fR to \fIdisturber\fR\.
+.
+.P
+The \fBfsd_disturb\fR() and \fBfsd_disturb_off\fR() functions install or remove a disturber from a filesystem specified by \fImntpath\fR\.
+.
+.P
+The \fBfsd_disturb_omni\fR() and \fBfsd_disturb_omni_off\fR() functions install or remove the omnipresent disturber\.
+.
+.P
+The \fBfsd_get_info\fR() function return \fBfsd_info_t\fR structure to \fIinfo\fR\. This structure contains fields:
+.
+.IP "\(bu" 4
+\fBfsdinf_enabled\fR: is fsd enabled?
+.IP "\(bu" 4
+\fBfsdinf_count\fR: how many disturbers are installed?
+.IP "\(bu" 4
+\fBfsdinf_omni_on\fR: is the omnipresent disturber installed?
+.IP "\(bu" 4
+\fBfsdinf_omni_param\fR: if \fBfsdinf_omni_on\fR, what are the
+.
+	parameters of the omnipresent disturber?
+.
+.P
+The \fBfsd_get_list\fR() function fills \fIfslist\fR with \fBfsd_fs_t\fR structures up to \fIcount\fR entries\. \fBfsd_fs_t\fR structure contains:
+.
+.br
+.IP "\(bu" 4
+\fBfsdf_param\fR: parameters of a disturber
+.IP "\(bu" 4
+\fBfsdf_name\fR: mountpoint of the disturber filesystem
+.
+.P
+It is possible, that \fIcount\fR is greater than the number of filesystems being
+disturber by fsd\. In this case, the number of returned \fBfsd_fs_t\fR entries
+is returned to \fIcount\fR\.
+.
+.SH "RETURN VALUES"
+Every function except \fBfsd_strerr\fR() and \fBfsd_close\fR() return \fB0\fR
+on success and \fB\-1\fR on failure\.
+.
+.SH "ERRORS"
+Error information is stored in \fBfsd_errno\fR and \fB_errno\fR fields of an fsd_handle_t\. \fB_errno\fR is set to \fBerrno\fR (see \fBIntro\fR(2)) when needed\. \fBfsd_errno\fR might be one of:
+.
+.IP "\(bu" 4
+\fBEFSD_NOERROR\fR: success.
+.
+.IP "\(bu" 4
+\fBEFSD_BAD_PARAM\fR: the disturber parameters are incorrect (bad range, chance, etc\.)
+.
+.IP "\(bu" 4
+\fBEFSD_CANT_OPEN_DRIVER\fR: the driver cannot be opened\. For more info see
+\fB_errno\fR\.
+.
+.IP "\(bu" 4
+\fBEFSD_CANT_OPEN_MOUNTPOINT\fR: the mountpoint cannot be opened\. For more
+info see \fB_errno\fR\.
+.
+.IP "\(bu" 4
+\fBEFSD_ENTRY_NOT_FOUND\fR: the entry cannot be found\. This filesystem is not
+being disturbed\.
+.
+.IP "\(bu" 4
+\fBEFSD_FAULT\fR: bad pointer has been passed\.
+.
+.IP "\(bu" 4
+\fBEFSD_NOT_ENABLED\fR: fsd is not enabled\.
+.
+.IP "\(bu" 4
+\fBEFSD_TOO_MANY_HOOKS\fR: hook limit exceeded\.
+.
+.IP "\(bu" 4
+\fBEFSD_INTERNAL\fR: internal library error\.
+.
+.IP "\(bu" 4
+\fBEFSD_UNKNOWN_ERROR\fR: unknown error\.
+.
+.IP "" 0
+.
+.SH "INTERFACES"
+The shared object \fBlibfsd\.so\.1\fR provides the public interfaces defined above\. See \fBIntro\fR(3) for additional information on shared object interfaces\.
+.
+.SH "SEE ALSO"
+\fBIntro\fR(2), \fBfsdadm\fR(1), \fBread\fR(2)
