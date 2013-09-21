@@ -36,7 +36,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 		fsd_disturb;
 		fsd_disturb_off;
 		fsd_enable;
-		fsd_get_param;
+		fsd_get_disturber;
 		fsd_disturb_omni;
 		fsd_disturb_omni_off;
 		fsd_open;

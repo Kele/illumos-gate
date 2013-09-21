@@ -42,6 +42,7 @@ MANFILES = 	libMPAPI.3lib		\
 	 	libexacct.3lib		\
 	 	libfcoe.3lib		\
 	 	libform.3lib		\
+		libfsd.3lib		\
 	 	libfstyp.3lib		\
 	 	libgen.3lib		\
 	 	libgss.3lib		\

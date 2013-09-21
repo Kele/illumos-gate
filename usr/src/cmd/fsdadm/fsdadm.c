@@ -216,7 +216,7 @@ main(int argc, char *argv[])
 
 	} else if (gflag) {
 		if (mflag) {
-			if (fsd_get_param(&handle, mnt, &param) != 0) {
+			if (fsd_get_disturber(&handle, mnt, &param) != 0) {
 				ret = errout(&handle);
 			} else {
 				(void) printf("%s\n", mnt);

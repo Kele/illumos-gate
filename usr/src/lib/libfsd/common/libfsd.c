@@ -23,7 +23,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-
+#include <errno.h>
 
 /*
  * libfsd
@@ -88,7 +88,7 @@
  *	the user-provided count. It just gets the maximal allowed amount of
  *	informaton.
  *
- * fsd_get_param(handle, path, param)
+ * fsd_get_disturber(handle, path, param)
  *	Gets disturber parameters from a filesystem of the file pointed by the
  *	path.
  *
@@ -114,8 +114,6 @@
  * properly share the handle between threads to preserve the consistency of
  * error data within a handle.
  */
-
-extern int errno;
 
 const char *
 fsd_strerr(int e)
@@ -277,7 +275,7 @@ fsd_disturb_omni_off(fsd_handle_t *handle)
 }
 
 int
-fsd_get_param(fsd_handle_t *handle, const char *mnt_path, fsd_t *param)
+fsd_get_disturber(fsd_handle_t *handle, const char *mnt_path, fsd_t *param)
 {
 	fsd_ioc_t ioc;
 	int error;

@@ -47,7 +47,7 @@ extern void fsd_close(fsd_handle_t *handle);
 extern int fsd_enable(fsd_handle_t *handle);
 extern int fsd_disable(fsd_handle_t *handle);
 
-extern int fsd_get_param(fsd_handle_t *handle, const char *mnt_path,
+extern int fsd_get_disturber(fsd_handle_t *handle, const char *mnt_path,
 		fsd_t *param);
 extern int fsd_disturb(fsd_handle_t *handle, const char *mnt_path,
 		fsd_t *param);
@@ -55,7 +55,6 @@ extern int fsd_disturb_off(fsd_handle_t *handle, const char *mnt_path);
 
 extern int fsd_disturb_omni(fsd_handle_t *handle, fsd_t *param);
 extern int fsd_disturb_omni_off(fsd_handle_t *handle);
-
 
 extern int fsd_get_info(fsd_handle_t *handle, fsd_info_t *info);
 extern int fsd_get_list(fsd_handle_t *handle, fsd_fs_t *fslist, int *count);
